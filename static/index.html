@@ -51,6 +51,29 @@
   .toast.err{border-color:#5c2620}
   .toast.ok{border-color:#1f5138}
   .empty{color:var(--dim);padding:10px 0}
+
+  /* ===== 元素编辑器（ARTOP Edit 样式） ===== */
+  .edWrap{display:grid;grid-template-columns:330px 1fr;gap:16px}
+  @media(max-width:900px){.edWrap{grid-template-columns:1fr}}
+  .edTreeBox{height:540px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px;background:#0b0d12}
+  .tnode{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap}
+  .tnode:hover{background:#1b2531}
+  .tnode.sel{background:#1d3a55}
+  .tnode .tw{width:12px;flex:none;color:var(--dim);font-size:11px}
+  .tnode .tnm{overflow:hidden;text-overflow:ellipsis}
+  .tnode .tcls{color:var(--dim);font-size:11px;flex:none}
+  .attrRow,.refRow{display:grid;gap:6px;margin-bottom:6px}
+  .attrRow{grid-template-columns:1fr 1.5fr 30px}
+  .refRow{grid-template-columns:1fr 1.6fr 30px}
+  .attrRow input,.refRow input{padding:6px 8px;font-size:12px}
+  .small{padding:5px 9px;font-size:12px}
+  .edTabs{margin:14px 0 12px}
+  .edSec{display:none}
+  .edSec.on{display:block}
+  .kvlabel{margin:0}
+  .pill.dirty{color:var(--warn);border-color:#5a4322}
+  .pill.new{color:var(--ok);border-color:#1f5138}
+  .pendItem{border-bottom:1px dashed #1c2130;padding:4px 0}
 </style>
 </head>
 <body>
@@ -97,7 +120,8 @@
     </div>
 
     <div class="tabs">
-      <button data-t="branches" class="active">分支 / 提交历史</button>
+      <button data-t="editor" class="active">元素编辑器</button>
+      <button data-t="branches">分支 / 提交历史</button>
       <button data-t="push">推送变更</button>
       <button data-t="reviews">评审合入</button>
       <button data-t="members">成员权限</button>
@@ -106,8 +130,98 @@
       <button data-t="audit">审计日志</button>
     </div>
 
+    <!-- 元素编辑器（ARTOP Edit 样式：内容树 + 多页表单） -->
+    <section data-p="editor">
+      <div class="edWrap">
+        <div class="card">
+          <h3>内容树 <span class="dim">AutosarContentsTree</span></h3>
+          <div class="row" style="margin-bottom:8px">
+            <input id="edSearch" placeholder="搜索 uid / 名称 / 路径" />
+            <button class="small" id="edSearchBtn">查找</button>
+            <button class="ghost small" id="edTreeReload">刷新</button>
+          </div>
+          <div id="edSearchHit" class="dim" style="margin-bottom:6px"></div>
+          <div class="edTreeBox" id="edTreeBox"></div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <span class="pill" id="edUid">未选择元素</span>
+            <span class="dim" id="edSnTip"></span>
+            <span class="pill" id="edCollab" style="display:none"></span>
+            <div class="spacer"></div>
+            <button class="ghost small" id="edNew">新建元素</button>
+            <button class="ghost small" id="edRevert">放弃修改</button>
+            <button class="small" id="edSave">保存（暂存）</button>
+          </div>
+
+          <div class="tabs edTabs">
+            <button data-ep="overview" class="active">概览 Overview</button>
+            <button data-ep="refs">引用 References</button>
+            <button data-ep="children">子元素 Contents</button>
+            <button data-ep="raw">原文 Raw</button>
+          </div>
+
+          <!-- OverviewPage：左元数据 / 右属性，双栏 -->
+          <div class="edSec on" data-epp="overview">
+            <div class="grid">
+              <div>
+                <label>元素 UID</label><input id="fUid" readonly />
+                <label>路径 Path</label><input id="fPath" placeholder="/AUTOSAR/..." />
+                <label>类 Class</label><input id="fCls" placeholder="SW-COMPONENT" />
+                <label>短名 ShortName</label><input id="fSn" />
+              </div>
+              <div>
+                <div class="row">
+                  <label class="kvlabel">属性 Attributes</label>
+                  <div class="spacer"></div>
+                  <button class="ghost small" id="addAttr">+ 属性</button>
+                </div>
+                <div id="attrBox" style="margin-top:6px"></div>
+                <div class="dim" style="font-size:12px">值按字符串保存；填 JSON（{ } / [ ]）会按结构保存</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="edSec" data-epp="refs">
+            <div class="row">
+              <label class="kvlabel">出向引用（可编辑）</label>
+              <div class="spacer"></div>
+              <button class="ghost small" id="addRef">+ 引用</button>
+            </div>
+            <div id="refOutBox" style="margin-top:6px"></div>
+            <label>入向引用（只读：谁引用了我）</label>
+            <table><thead><tr><th>特征</th><th>来源元素</th><th>类</th></tr></thead><tbody id="refInBody"></tbody></table>
+          </div>
+
+          <div class="edSec" data-epp="children">
+            <div class="row" style="margin-bottom:8px">
+              <button class="small" id="loadKids">加载子元素</button>
+              <span class="dim" id="kidCount"></span>
+            </div>
+            <table><thead><tr><th>短名</th><th>类</th><th>路径</th><th></th></tr></thead><tbody id="kidBody"></tbody></table>
+          </div>
+
+          <div class="edSec" data-epp="raw">
+            <div class="log" id="rawBox"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>待提交变更 <span class="dim" id="pendCount">0</span></h3>
+        <div class="row">
+          <div style="min-width:180px"><label>目标分支</label><select id="edBranch"></select></div>
+          <div style="flex:1;min-width:220px"><label>提交信息</label><input id="edMsg" value="edit model via editor" /></div>
+          <button class="ok" id="edCommit">提交并推送</button>
+          <button class="ghost" id="edClear">清空暂存</button>
+        </div>
+        <div class="log" id="pendBox" style="height:130px;margin-top:10px"></div>
+      </div>
+    </section>
+
     <!-- 分支 / 历史 -->
-    <section data-p="branches">
+    <section data-p="branches" style="display:none">
       <div class="grid">
         <div class="card">
           <h3>分支</h3>
@@ -300,7 +414,13 @@ $('#mkRepo').onclick = async () => {
   catch(e){ toast(e.message,'err'); }
 };
 
-function refreshAll(){ if(!repoId) return; loadBranches(); loadReviews(); loadMembers(); loadAudit(); }
+function refreshAll(){
+  if(!repoId) return;
+  treeRepo = null;
+  loadBranches(); loadReviews(); loadMembers(); loadAudit();
+  const act = document.querySelector('.tabs [data-t].active');
+  if(act && act.dataset.t==='editor') ensureTree();
+}
 
 /* ---------------- 分支 / 历史 ---------------- */
 async function loadBranches(){
@@ -316,6 +436,24 @@ async function loadBranches(){
     sel.onchange = loadLog;
     if(res.branches.length) loadLog();
     else $('#logBody').innerHTML='';
+
+    // 编辑器的目标分支下拉
+    const edSel = $('#edBranch');
+    if(edSel){
+      const cur = edSel.value;
+      edSel.innerHTML='';
+      if(!res.branches.length){
+        edSel.innerHTML='<option value="main">main（首次提交时创建）</option>';
+      } else {
+        for(const b of res.branches){
+          branchHeads[b.name] = b.head;
+          const o=document.createElement('option'); o.value=b.name; o.textContent=b.name;
+          edSel.appendChild(o);
+        }
+        edSel.value = (cur && [...edSel.options].some(o=>o.value===cur))
+          ? cur : (res.branches.some(b=>b.name==='main') ? 'main' : res.branches[0].name);
+      }
+    }
   }catch(e){ toast(e.message,'err'); }
 }
 async function loadLog(){
@@ -441,10 +579,18 @@ $('#wsConn').onclick = () => {
   ws.onclose = () => { $('#wsState').textContent='已断开'; $('#wsState').className='pill'; };
   ws.onerror = () => toast('WebSocket 错误','err');
   ws.onmessage = ev => {
+    let obj = null; try{ obj = JSON.parse(ev.data); }catch(e){}
     const box=$('#wsLog'); const d=document.createElement('div');
-    let pretty=ev.data; try{ pretty = j(JSON.parse(ev.data)); }catch(e){}
-    d.textContent = new Date().toLocaleTimeString()+'  '+pretty;
+    d.textContent = new Date().toLocaleTimeString()+'  '+(obj ? j(obj) : ev.data);
     box.prepend(d);
+    // 协同编辑：他人改了元素 -> 顶部提示；若正打开同一元素且本地无改动，实时刷新
+    if(obj && obj.type==='edit' && obj.payload && obj.payload.uid){
+      const ind=$('#edCollab');
+      if(ind){ ind.style.display=''; ind.textContent='协同：'+(obj.by||'他人')+' 正在编辑 '+String(obj.payload.uid).slice(0,12); }
+      if(edit && edit.uid===obj.payload.uid && !pending.has(edit.uid) && !edDirty){
+        selectElement(edit.uid, document.querySelector('.tnode.sel'));
+      }
+    }
   };
 };
 $('#wsDisc').onclick = () => { if(ws){ ws.close(); ws=null; } };
@@ -455,12 +601,288 @@ $('#wsSend').onclick = () => {
   $('#pingMsg').value='';
 };
 
+/* ---------------- 元素编辑器（ARTOP Edit 样式） ---------------- */
+let edit = null;              // 当前打开的元素
+let pending = new Map();      // uid -> 待提交变更项
+let branchHeads = {};         // 分支名 -> head commit
+let edDirty = false;
+let treeRepo = null;
+
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmtVal(v){ return (typeof v==='object' && v!==null) ? JSON.stringify(v) : String(v==null?'':v); }
+
+function makeEdit(d){
+  return {
+    uid: d.uid, path: d.path || '', cls: d.cls || '', sn: d.sn || '',
+    attrList: Object.entries(d.attrs || {}).map(([k,v]) => ({ k, v: fmtVal(v) })),
+    refList: (d.refs_out || []).map(r => ({ feat: r.feat, tgt: r.tgt })),
+    refsIn: d.refs_in || [],
+    isNew: !!d.isNew,
+  };
+}
+
+function ensureTree(){
+  if(treeRepo === repoId) return;
+  treeRepo = repoId;
+  edLoadRoot();
+  renderPending();
+}
+
+async function edLoadRoot(){
+  const box = $('#edTreeBox');
+  if(!repoId){ box.innerHTML = '<div class="empty">先创建一个仓库</div>'; return; }
+  box.innerHTML = '<div class="dim" style="padding:6px">加载中…</div>';
+  try{
+    const r = await api('GET', `/api/repos/${repoId}/tree?parent=&limit=3000`);
+    box.innerHTML = '';
+    if(!r.nodes.length){ box.innerHTML = '<div class="empty">仓库暂无元素。先到「推送变更」导入模型，或点上方「新建元素」。</div>'; return; }
+    renderTree(r.nodes, box, 0);
+  }catch(e){ box.innerHTML=''; toast(e.message,'err'); }
+}
+
+function renderTree(nodes, container, depth){
+  for(const n of nodes){
+    const row = document.createElement('div');
+    row.className = 'tnode';
+    row.style.paddingLeft = (6 + depth*14) + 'px';
+    const tw = document.createElement('span'); tw.className='tw';
+    tw.textContent = n.has_children ? '▸' : (n.is_element ? '·' : ' ');
+    const nm = document.createElement('span'); nm.className='tnm';
+    nm.textContent = n.is_element ? (n.sn || n.name) : n.name + '/';
+    const cl = document.createElement('span'); cl.className='tcls';
+    cl.textContent = n.is_element ? (n.cls || '') : 'package';
+    row.append(tw, nm, cl);
+    const kids = document.createElement('div');
+    container.append(row, kids);
+    if(n.is_element) row.dataset.uid = n.uid;
+
+    let opened = false;
+    row.onclick = async () => {
+      if(n.is_element) await selectElement(n.uid, row);
+      if(n.has_children){
+        if(!opened){
+          opened = true; tw.textContent='▾';
+          kids.innerHTML = '<div class="dim" style="padding-left:'+(6+(depth+1)*14)+'px">加载中…</div>';
+          try{
+            const r = await api('GET', `/api/repos/${repoId}/tree?parent=${encodeURIComponent(n.path)}&limit=3000`);
+            kids.innerHTML=''; renderTree(r.nodes, kids, depth+1);
+          }catch(e){ kids.innerHTML=''; toast(e.message,'err'); }
+        }else{
+          const hide = kids.style.display !== 'none';
+          kids.style.display = hide ? 'none' : '';
+          tw.textContent = hide ? '▸' : '▾';
+        }
+      }
+    };
+  }
+}
+
+async function selectElement(uid, row){
+  try{
+    const r = await api('GET', `/api/repos/${repoId}/elements/${encodeURIComponent(uid)}`);
+    edit = makeEdit(r.element);
+    document.querySelectorAll('.tnode.sel').forEach(x => x.classList.remove('sel'));
+    if(row) row.classList.add('sel');
+    edDirty = false;
+    renderEdit();
+    const ind = $('#edCollab'); if(ind) ind.style.display='none';
+  }catch(e){ toast(e.message,'err'); }
+}
+window.edOpen = uid => selectElement(uid, null);
+
+function renderEdit(){
+  if(!edit){ $('#edUid').textContent='未选择元素'; $('#edUid').className='pill'; return; }
+  $('#edUid').textContent = edit.isNew ? '新建元素' : edit.uid;
+  $('#edUid').className = 'pill ' + (edit.isNew ? 'new' : '');
+  $('#edSnTip').textContent = (edit.cls||'—') + '   ' + (edit.path||'');
+  $('#fUid').value = edit.uid;
+  $('#fPath').value = edit.path;
+  $('#fCls').value = edit.cls;
+  $('#fSn').value = edit.sn;
+  renderAttrs(); renderRefs(); renderRefIn(); renderRaw();
+  $('#kidBody').innerHTML=''; const kc=$('#kidCount'); if(kc) kc.textContent='';
+}
+
+function attrRow(a){
+  const d=document.createElement('div'); d.className='attrRow';
+  const k=document.createElement('input'); k.placeholder='key'; k.value=a.k;
+  const v=document.createElement('input'); v.placeholder='value'; v.value=a.v;
+  const del=document.createElement('button'); del.className='ghost small'; del.textContent='×';
+  k.oninput=()=>{ a.k=k.value; markDirty(); };
+  v.oninput=()=>{ a.v=v.value; markDirty(); };
+  del.onclick=()=>{ edit.attrList = edit.attrList.filter(x=>x!==a); renderAttrs(); markDirty(); };
+  d.append(k,v,del); return d;
+}
+function renderAttrs(){
+  const box=$('#attrBox'); box.innerHTML='';
+  if(!edit) return;
+  for(const a of edit.attrList) box.appendChild(attrRow(a));
+  if(!edit.attrList.length) box.innerHTML='<div class="dim" style="font-size:12px">无属性，点「+ 属性」添加</div>';
+}
+function refRow(r){
+  const d=document.createElement('div'); d.className='refRow';
+  const f=document.createElement('input'); f.placeholder='特征 feature'; f.value=r.feat;
+  const t=document.createElement('input'); t.placeholder='目标 uid'; t.value=r.tgt;
+  const del=document.createElement('button'); del.className='ghost small'; del.textContent='×';
+  f.oninput=()=>{ r.feat=f.value; markDirty(); };
+  t.oninput=()=>{ r.tgt=t.value; markDirty(); };
+  del.onclick=()=>{ edit.refList=edit.refList.filter(x=>x!==r); renderRefs(); markDirty(); };
+  d.append(f,t,del); return d;
+}
+function renderRefs(){
+  const box=$('#refOutBox'); box.innerHTML='';
+  if(!edit) return;
+  for(const r of edit.refList) box.appendChild(refRow(r));
+  if(!edit.refList.length) box.innerHTML='<div class="dim" style="font-size:12px">无出向引用</div>';
+}
+function renderRefIn(){
+  const tb=$('#refInBody'); tb.innerHTML='';
+  if(!edit) return;
+  if(!edit.refsIn.length){ tb.innerHTML='<tr><td colspan=3 class="empty">无</td></tr>'; return; }
+  for(const r of edit.refsIn){
+    tb.innerHTML += `<tr><td><code>${esc(r.feat)}</code></td><td>${esc(r.sn||'')} <span class="dim">${esc(r.path||r.tgt)}</span></td><td class="dim">${esc(r.cls||'')}</td></tr>`;
+  }
+}
+function renderRaw(){
+  const ch = collectChange();
+  $('#rawBox').innerHTML = ch ? ('<div>'+ j(ch).replace(/\n/g,'</div><div>') +'</div>') : '<div class="dim">未选择元素</div>';
+}
+function markDirty(){ edDirty = true; renderRaw(); }
+
+function collectChange(){
+  if(!edit) return null;
+  const attrs = {};
+  for(const {k, v} of edit.attrList){
+    const key = (k||'').trim(); if(!key) continue;
+    const t = (v||'').trim();
+    let val = v;
+    if(t.startsWith('{') || t.startsWith('[')){ try{ val = JSON.parse(t); }catch(e){ val = v; } }
+    attrs[key] = val;
+  }
+  const refs_out = edit.refList
+    .filter(r => (r.feat||'').trim() && (r.tgt||'').trim())
+    .map(r => ({ feat: r.feat.trim(), tgt: r.tgt.trim() }));
+  return { uid: edit.uid, path: edit.path, cls: edit.cls, op: edit.isNew ? 'A' : 'M', sn: edit.sn, attrs, refs_out };
+}
+
+function broadcastEdit(ch){
+  if(!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type:'edit', action:'setAttr',
+    payload: { uid: ch.uid, path: ch.path, cls: ch.cls, sn: ch.sn, attrs: ch.attrs } }));
+}
+
+function renderPending(){
+  $('#pendCount').textContent = pending.size;
+  const box = $('#pendBox');
+  if(!pending.size){
+    box.innerHTML = '<div class="dim">暂存区为空。在表单里改完点「保存（暂存）」，可累积多个元素后统一「提交并推送」。</div>';
+    return;
+  }
+  box.innerHTML = '';
+  for(const ch of pending.values()){
+    const d = document.createElement('div'); d.className='pendItem';
+    const op = ch.op==='A' ? '新增' : (ch.op==='D' ? '删除' : '修改');
+    d.innerHTML = `<code>${esc(ch.uid).slice(0,16)}</code> <span class="pill">${op}</span> ${esc(ch.sn||'')} ` +
+      `<span class="dim">${esc(ch.path)} · ${Object.keys(ch.attrs).length} 属性 / ${ch.refs_out.length} 引用</span>`;
+    box.appendChild(d);
+  }
+}
+
+$('#edSave').onclick = () => {
+  if(!edit) return toast('先在内容树里选一个元素','err');
+  if(!edit.uid || !edit.path || !edit.cls) return toast('uid / path / class 不能为空','err');
+  const ch = collectChange();
+  pending.set(ch.uid, ch);
+  edDirty = false;
+  renderPending();
+  broadcastEdit(ch);
+  toast('已暂存 ' + ch.uid.slice(0,12), 'ok');
+};
+$('#edRevert').onclick = async () => {
+  if(!edit) return;
+  pending.delete(edit.uid); renderPending();
+  if(edit.isNew){ edit=null; renderEdit(); toast('已取消新建','ok'); return; }
+  await selectElement(edit.uid, document.querySelector('.tnode.sel'));
+  toast('已放弃修改','ok');
+};
+$('#edNew').onclick = () => {
+  edit = makeEdit({ uid:'new-'+Math.random().toString(36).slice(2,10), path:'', cls:'SW-COMPONENT', sn:'', attrs:{}, refs_out:[], refs_in:[], isNew:true });
+  document.querySelectorAll('.tnode.sel').forEach(x=>x.classList.remove('sel'));
+  edDirty = true;
+  renderEdit();
+  $('#fPath').focus();
+};
+$('#fPath').oninput = e => { if(edit){ edit.path=e.target.value; markDirty(); } };
+$('#fCls').oninput  = e => { if(edit){ edit.cls=e.target.value;  markDirty(); } };
+$('#fSn').oninput   = e => { if(edit){ edit.sn=e.target.value;    markDirty(); } };
+$('#addAttr').onclick = () => { if(!edit) return; edit.attrList.push({k:'',v:''}); renderAttrs(); };
+$('#addRef').onclick  = () => { if(!edit) return; edit.refList.push({feat:'',tgt:''}); renderRefs(); };
+$('#edTreeReload').onclick = edLoadRoot;
+
+$('#edSearchBtn').onclick = async () => {
+  const q = $('#edSearch').value.trim();
+  const hit = $('#edSearchHit');
+  if(!q){ hit.textContent=''; return; }
+  try{
+    const r = await api('GET', `/api/repos/${repoId}/elements?q=${encodeURIComponent(q)}&limit=50`);
+    if(!r.elements.length){ hit.textContent='无匹配'; return; }
+    hit.innerHTML = '命中 ' + r.elements.length + ' 个：' + r.elements.map(e =>
+      `<a href="#" onclick="event.preventDefault();edOpen('${esc(e.uid)}')">${esc(e.sn || e.uid)}</a>`).join(' · ');
+  }catch(e){ toast(e.message,'err'); }
+};
+$('#edSearch').onkeydown = e => { if(e.key==='Enter') $('#edSearchBtn').click(); };
+
+$('#loadKids').onclick = async () => {
+  if(!edit) return toast('先选一个元素','err');
+  try{
+    const r = await api('GET', `/api/repos/${repoId}/tree?parent=${encodeURIComponent(edit.path)}&limit=2000`);
+    const tb = $('#kidBody'); tb.innerHTML='';
+    const kids = r.nodes.filter(x => x.is_element);
+    for(const x of kids){
+      tb.innerHTML += `<tr><td>${esc(x.sn || x.name)}</td><td class="dim">${esc(x.cls||'')}</td>` +
+        `<td class="dim">${esc(x.path)}</td><td><button class="ghost small" onclick="edOpen('${esc(x.uid)}')">打开</button></td></tr>`;
+    }
+    $('#kidCount').textContent = kids.length + ' 个直接子元素';
+    if(!kids.length) tb.innerHTML='<tr><td colspan=4 class="empty">无直接子元素</td></tr>';
+  }catch(e){ toast(e.message,'err'); }
+};
+
+$('#edCommit').onclick = async () => {
+  if(!pending.size) return toast('暂存区为空','err');
+  const branch = $('#edBranch').value || 'main';
+  let base = null;
+  try{
+    const r = await api('GET', `/api/repos/${repoId}/branches`);
+    const b = r.branches.find(x => x.name === branch);
+    if(b) base = b.head;      // 提交前取最新分支头，保证快进
+  }catch(e){}
+  const body = { branch, message: $('#edMsg').value.trim() || 'edit model', changes: [...pending.values()] };
+  if(base) body.base_commit = base;
+  try{
+    const res = await api('POST', `/api/repos/${repoId}/push`, body);
+    toast('已提交并推送 ' + res.commit_id.slice(0,8) + ' → ' + branch, 'ok');
+    pending.clear(); renderPending(); loadBranches();
+  }catch(e){ toast(e.message,'err'); }
+};
+$('#edClear').onclick = () => { pending.clear(); renderPending(); toast('已清空暂存','ok'); };
+
+/* 编辑器页签切换 */
+document.querySelectorAll('.edTabs [data-ep]').forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll('.edTabs [data-ep]').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    document.querySelectorAll('.edSec[data-epp]').forEach(s => s.classList.toggle('on', s.dataset.epp === b.dataset.ep));
+    if(b.dataset.ep === 'raw') renderRaw();
+  };
+});
+
 /* ---------------- Tab 切换 ---------------- */
 document.querySelectorAll('.tabs [data-t]').forEach(b=>{
   b.onclick = () => {
     document.querySelectorAll('.tabs [data-t]').forEach(x=>x.classList.remove('active'));
     b.classList.add('active');
     document.querySelectorAll('section[data-p]').forEach(s=>s.style.display = (s.dataset.p===b.dataset.t) ? '' : 'none');
+    if(b.dataset.t==='editor'){ ensureTree(); loadBranches(); }
     if(b.dataset.t==='branches') loadBranches();
     if(b.dataset.t==='reviews') loadReviews();
     if(b.dataset.t==='members') loadMembers();

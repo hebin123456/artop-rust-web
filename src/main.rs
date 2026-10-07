@@ -14,6 +14,7 @@ mod api;
 mod auth;
 mod config;
 mod db;
+mod editor;
 mod error;
 mod rbac;
 mod realtime;

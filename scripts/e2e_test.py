@@ -257,6 +257,86 @@ def main():
     check("审计日志覆盖 push/review/merge", {"push", "review.open", "review.decide", "review.merge"} <= acts,
           ",".join(sorted(acts)))
 
+    section("5b. 元素编辑器（ARTOP Edit：内容树 / 详情 / 搜索 / 编辑提交）")
+    # 内容树根：AUTOSAR 包应既是元素、又可继续展开
+    st, r = call("GET", "/api/repos/%d/tree?parent=" % repo, token=carol_t)
+    root = r.get("nodes", []) if st == 200 else []
+    auto = next((n for n in root if n["name"] == "AUTOSAR"), None)
+    check("内容树根节点返回，AUTOSAR 包既是元素又可展开",
+          st == 200 and auto is not None and auto["is_element"] and auto["has_children"],
+          "root nodes=%d" % len(root))
+
+    st, r = call("GET", "/api/repos/%d/tree?parent=%s" % (repo, urllib.parse.quote("/AUTOSAR")), token=carol_t)
+    check("内容树懒加载 /AUTOSAR 子节点", st == 200 and len(r.get("nodes", [])) > 0,
+          "children=%d" % len(r.get("nodes", [])))
+
+    # 元素详情：带属性 + 出/入向引用（引用需回填对端可读名）
+    src_uid = refs[0]["src"] if refs else els[0]["id"]
+    st, r = call("GET", "/api/repos/%d/elements/%s" % (repo, urllib.parse.quote(src_uid)), token=carol_t)
+    el = r.get("element", {}) if st == 200 else {}
+    check("元素详情返回属性与出向引用",
+          st == 200 and el.get("uid") == src_uid and len(el.get("refs_out", [])) >= 1,
+          "cls=%s out=%d in=%d" % (el.get("cls"), len(el.get("refs_out", [])), len(el.get("refs_in", []))))
+
+    # 搜索（编辑器"查找元素"）
+    probe = els[3]
+    st, r = call("GET", "/api/repos/%d/elements?q=%s&limit=20" % (repo, urllib.parse.quote(probe["sn"])), token=carol_t)
+    hits = r.get("elements", []) if st == 200 else []
+    check("按名称搜索命中元素", st == 200 and any(e["uid"] == probe["id"] for e in hits),
+          "%s -> %d 条" % (probe["sn"], len(hits)))
+
+    # 类分布（编辑器分类统计）
+    st, r = call("GET", "/api/repos/%d/classes" % repo, token=carol_t)
+    total = sum(c["count"] for c in r.get("classes", [])) if st == 200 else -1
+    check("类分布统计等于当前视图元素数", st == 200 and total == len(els) + 20,
+          "sum=%d vs %d" % (total, len(els) + 20))
+
+    # 越权：非成员读内容树被拒
+    st, r = call("GET", "/api/repos/%d/tree?parent=" % repo, token=eve_t)
+    check("非成员读内容树被拒(403)", st == 403, "got %d" % st)
+
+    # 编辑保存：GET 详情 -> 改属性 -> push -> 再 GET 读回（编辑器核心闭环）
+    st, r = call("GET", "/api/repos/%d/elements/%s" % (repo, urllib.parse.quote(probe["id"])), token=bob_t)
+    det = r["element"]
+    new_attrs = dict(det.get("attrs") or {})
+    new_attrs["edited_by"] = "editor"
+    new_attrs["rev"] = 4242
+    edit_change = {"uid": det["uid"], "path": det["path"], "cls": det["cls"], "op": "M",
+                   "sn": det.get("sn"), "attrs": new_attrs,
+                   "refs_out": [{"feat": x["feat"], "tgt": x["tgt"]} for x in det.get("refs_out", [])]}
+    st, r = call("POST", "/api/repos/%d/push" % repo,
+                 {"branch": "editor/scratch", "message": "editor: edit %s" % det.get("sn"),
+                  "changes": [edit_change]}, token=bob_t)
+    check("编辑器保存：首次提交新建 editor/scratch 分支",
+          st == 200 and r["applied"] == "branch-created", str(r)[:160])
+    esc_head = r["commit_id"] if st == 200 else None
+
+    st, r = call("GET", "/api/repos/%d/elements/%s" % (repo, urllib.parse.quote(probe["id"])), token=bob_t)
+    at = r["element"]["attrs"] if st == 200 else {}
+    check("编辑器保存后属性可读回", at.get("edited_by") == "editor" and at.get("rev") == 4242,
+          json.dumps(at, ensure_ascii=False))
+
+    if esc_head:
+        new_attrs2 = dict(new_attrs)
+        new_attrs2["rev"] = 4243
+        edit_change["attrs"] = new_attrs2
+        st, r = call("POST", "/api/repos/%d/push" % repo,
+                     {"branch": "editor/scratch", "base_commit": esc_head,
+                      "message": "editor: tweak again", "changes": [edit_change]}, token=bob_t)
+        check("编辑器再次保存走快进提交", st == 200 and r["applied"] == "fast-forward", str(r)[:160])
+
+    # 编辑器新建元素
+    new_el = {"uid": "editor-new-%s" % suffix, "path": "/POC/EditorMade", "cls": "SW-COMPONENT",
+              "op": "A", "sn": "EditorMade", "attrs": {"name": "EditorMade"}, "refs_out": []}
+    st, r = call("GET", "/api/repos/%d/branches" % repo, token=bob_t)
+    esh = next((b["head"] for b in r["branches"] if b["name"] == "editor/scratch"), None)
+    st, r = call("POST", "/api/repos/%d/push" % repo,
+                 {"branch": "editor/scratch", "base_commit": esh, "message": "editor: create element",
+                  "changes": [new_el]}, token=bob_t)
+    check("编辑器新建元素提交成功", st == 200, str(r)[:160])
+    st, r = call("GET", "/api/repos/%d/elements/%s" % (repo, urllib.parse.quote(new_el["uid"])), token=bob_t)
+    check("新建元素可被读取", st == 200 and r["element"]["path"] == "/POC/EditorMade", str(r)[:160])
+
     section("6. 实时协作（WebSocket + Redis pub/sub）")
     try:
         import asyncio

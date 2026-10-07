@@ -1,4 +1,4 @@
-//! HTTP API：账号 / 仓库 / 成员权限 / 分支 / 推送 / 历史 / 影响分析 / 评审合入
+//! HTTP API：账号 / 仓库 / 成员权限 / 分支 / 推送 / 历史 / 影响分析 / 评审合入 / 元素编辑器
 //!
 //! 鉴权：除 register/login/health 外，均要求 Authorization: Bearer <jwt>。
 //! 授权：每个涉及仓库的操作都过 rbac::require，角色不足直接 403。
@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 use sqlx::Row;
 
 use crate::auth::{self, AuthUser};
+use crate::editor;
 use crate::error::{AppError, AppResult};
 use crate::rbac;
 use crate::review;
@@ -31,6 +32,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/repos/:id/diff", get(diff))
         .route("/api/repos/:id/impact", get(impact))
         .route("/api/repos/:id/audit", get(audit_tail))
+        // 元素编辑器读取侧（ARTOP Edit：内容树 / 元素详情 / 搜索 / 类分布）
+        .route("/api/repos/:id/tree", get(model_tree))
+        .route("/api/repos/:id/elements", get(list_elements))
+        .route("/api/repos/:id/elements/:uid", get(get_element))
+        .route("/api/repos/:id/classes", get(list_classes))
         .route("/api/repos/:id/reviews", post(create_review).get(list_reviews))
         .route("/api/reviews/:rid", get(get_review))
         .route("/api/reviews/:rid/merge-check", get(merge_check))
@@ -400,6 +406,75 @@ async fn audit_tail(
         })
         .collect();
     Ok(Json(json!({ "repo_id": repo_id, "audit": items })))
+}
+
+// ===================== 元素编辑器（ARTOP Edit） =====================
+
+#[derive(Deserialize)]
+struct TreeQuery {
+    #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+async fn model_tree(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+    Query(q): Query<TreeQuery>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let parent = q.parent.unwrap_or_default();
+    let out = editor::tree(&st.db, repo_id, &parent, q.limit.unwrap_or(2000)).await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct ElementQuery {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    cls: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    offset: Option<i64>,
+}
+
+async fn list_elements(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+    Query(q): Query<ElementQuery>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let qq = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let cls = q.cls.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let items = editor::search(&st.db, repo_id, qq, cls, q.limit.unwrap_or(100), q.offset.unwrap_or(0)).await?;
+    Ok(Json(json!({ "repo_id": repo_id, "elements": items })))
+}
+
+async fn get_element(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path((repo_id, uid)): Path<(i64, String)>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let el = editor::get(&st.db, repo_id, &uid)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("元素 {uid} 不存在")))?;
+    Ok(Json(json!({ "repo_id": repo_id, "element": el })))
+}
+
+async fn list_classes(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let classes = editor::classes(&st.db, repo_id).await?;
+    Ok(Json(json!({ "repo_id": repo_id, "classes": classes })))
 }
 
 // ===================== 评审 / 合入 =====================
