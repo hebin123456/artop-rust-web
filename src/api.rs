@@ -36,6 +36,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/repos/:id/tree", get(model_tree))
         .route("/api/repos/:id/elements", get(list_elements))
         .route("/api/repos/:id/elements/:uid", get(get_element))
+        .route("/api/repos/:id/elements/:uid/schema", get(element_schema))
+        .route("/api/repos/:id/schema", get(class_schema))
         .route("/api/repos/:id/classes", get(list_classes))
         .route("/api/repos/:id/reviews", post(create_review).get(list_reviews))
         .route("/api/reviews/:rid", get(get_review))
@@ -475,6 +477,33 @@ async fn list_classes(
     rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
     let classes = editor::classes(&st.db, repo_id).await?;
     Ok(Json(json!({ "repo_id": repo_id, "classes": classes })))
+}
+
+/// 属性编辑器 schema：根据 Ecore 原模型给出该元素可编辑的字段树。
+async fn element_schema(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path((repo_id, uid)): Path<(i64, String)>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let out = editor::schema(&st.db, &st.mm, repo_id, &uid).await?;
+    Ok(Json(out))
+}
+
+#[derive(Deserialize)]
+struct ClassSchemaQuery {
+    cls: String,
+}
+
+/// 按类名取元模型字段模板（不含值）：新建元素时按选择的类预取可编辑字段。
+async fn class_schema(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+    Query(q): Query<ClassSchemaQuery>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    Ok(Json(editor::class_schema(&st.mm, q.cls.trim())))
 }
 
 // ===================== 评审 / 合入 =====================

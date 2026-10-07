@@ -16,6 +16,7 @@ mod config;
 mod db;
 mod editor;
 mod error;
+mod metamodel;
 mod rbac;
 mod realtime;
 mod review;
@@ -59,7 +60,21 @@ async fn main() -> anyhow::Result<()> {
         .await
         .map_err(|e| anyhow::anyhow!("redis 连接失败：{e}"))?;
 
-    let state = AppState { db: pool, redis, redis_client, cfg: cfg.clone() };
+    // Ecore 原模型注册表：从生成的 model/metamodel.json 载入，属性编辑器据此决定
+    // "某类元素能编辑哪些字段、各字段是什么控件"。缺失只告警降级，不阻断启动。
+    let mm_path = std::env::var("MM_PATH").unwrap_or_else(|_| "model/metamodel.json".into());
+    let mm = match metamodel::Metamodel::load(&mm_path) {
+        Ok(m) => {
+            tracing::info!("元模型已加载：{}", m.stats());
+            Arc::new(m)
+        }
+        Err(e) => {
+            tracing::warn!("元模型 {mm_path} 加载失败，属性编辑器将退化为原始键值模式：{e}");
+            Arc::new(metamodel::Metamodel::empty())
+        }
+    };
+
+    let state = AppState { db: pool, redis, redis_client, cfg: cfg.clone(), mm };
 
     let app = api::router(state)
         .fallback_service(ServeDir::new("static"))

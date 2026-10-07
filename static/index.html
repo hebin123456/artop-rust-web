@@ -62,10 +62,8 @@
   .tnode .tw{width:12px;flex:none;color:var(--dim);font-size:11px}
   .tnode .tnm{overflow:hidden;text-overflow:ellipsis}
   .tnode .tcls{color:var(--dim);font-size:11px;flex:none}
-  .attrRow,.refRow{display:grid;gap:6px;margin-bottom:6px}
-  .attrRow{grid-template-columns:1fr 1.5fr 30px}
-  .refRow{grid-template-columns:1fr 1.6fr 30px}
-  .attrRow input,.refRow input{padding:6px 8px;font-size:12px}
+  .refRow{display:grid;gap:6px;margin-bottom:6px;grid-template-columns:1fr 1.6fr 30px}
+  .refRow input{padding:6px 8px;font-size:12px}
   .small{padding:5px 9px;font-size:12px}
   .edTabs{margin:14px 0 12px}
   .edSec{display:none}
@@ -74,6 +72,44 @@
   .pill.dirty{color:var(--warn);border-color:#5a4322}
   .pill.new{color:var(--ok);border-color:#1f5138}
   .pendItem{border-bottom:1px dashed #1c2130;padding:4px 0}
+
+  /* ===== 属性树（元模型驱动：选节点 -> 编辑属性） ===== */
+  .ptoolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px}
+  .ptoolbar > input{width:auto;max-width:260px}
+  .chk{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--dim);margin:0}
+  .chk input{width:auto}
+  .ptree{border:1px solid var(--line);border-radius:8px;background:#0b0d12;max-height:470px;overflow:auto;padding:4px}
+  .pnode{display:flex;align-items:flex-start;gap:8px;padding:3px 6px;border-radius:6px;cursor:pointer;font-size:13px}
+  .pnode:hover{background:#161c27}
+  .pnode.sel{background:#1d3a55}
+  .pcaret{width:12px;flex:none;color:var(--dim);font-size:11px;line-height:20px}
+  .picon{flex:none;min-width:38px;text-align:center;font-size:10px;line-height:16px;margin-top:2px;border-radius:4px;border:1px solid var(--line);color:var(--dim);padding:0 3px}
+  .picon.attr{color:#9ad0ff;border-color:#1d3a55}
+  .picon.ref{color:var(--ok);border-color:#1f5138}
+  .picon.ref.um{color:var(--err);border-color:#5c2620}
+  .picon.grp{color:var(--warn);border-color:#5a4322}
+  .picon.extra{color:var(--dim)}
+  .pmain{flex:1;min-width:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+  .pname{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
+  .ptype{color:var(--dim);font-size:11px;font-family:ui-monospace,Menlo,monospace}
+  .pbadge{font-size:10px;border:1px solid var(--line);border-radius:999px;padding:0 6px;color:var(--dim);line-height:16px}
+  .pbadge.ro{color:var(--warn);border-color:#5a4322}
+  .pbadge.multi{color:var(--brand);border-color:#1d3a55}
+  .pbadge.req{color:var(--err);border-color:#5c2620}
+  .pdef{color:#5f6b85;font-size:11px;margin-left:auto}
+  .pctl{flex:none;display:flex;align-items:center;gap:4px}
+  .pctl input,.pctl select{padding:3px 7px;font-size:12px;width:210px;margin-top:1px}
+  .pctl input[readonly]{opacity:.6}
+  .pctl button{padding:2px 7px;font-size:12px}
+  .plist{display:flex;flex-direction:column;gap:3px}
+  .pit{display:flex;gap:4px;align-items:center}
+  .ptargets{padding-left:26px;display:flex;flex-direction:column;gap:2px}
+  .ptgt{display:flex;align-items:center;gap:8px;font-size:12px;padding:2px 6px;border-radius:5px;cursor:pointer}
+  .ptgt:hover{background:#161c27}
+  .ptgt .psn{font-family:ui-monospace,Menlo,monospace}
+  .ptgt .ppath{color:var(--dim);word-break:break-all}
+  .pempty{color:var(--dim);font-size:12px;padding:2px 6px}
+  .pfiltered{color:var(--dim);font-size:12px;padding:8px}
 </style>
 </head>
 <body>
@@ -162,25 +198,19 @@
             <button data-ep="raw">原文 Raw</button>
           </div>
 
-          <!-- OverviewPage：左元数据 / 右属性，双栏 -->
+          <!-- PropertyTreePage：元模型驱动的属性树，选中节点即可编辑 -->
           <div class="edSec on" data-epp="overview">
-            <div class="grid">
-              <div>
-                <label>元素 UID</label><input id="fUid" readonly />
-                <label>路径 Path</label><input id="fPath" placeholder="/AUTOSAR/..." />
-                <label>类 Class</label><input id="fCls" placeholder="SW-COMPONENT" />
-                <label>短名 ShortName</label><input id="fSn" />
-              </div>
-              <div>
-                <div class="row">
-                  <label class="kvlabel">属性 Attributes</label>
-                  <div class="spacer"></div>
-                  <button class="ghost small" id="addAttr">+ 属性</button>
-                </div>
-                <div id="attrBox" style="margin-top:6px"></div>
-                <div class="dim" style="font-size:12px">值按字符串保存；填 JSON（{ } / [ ]）会按结构保存</div>
-              </div>
+            <div class="ptoolbar">
+              <span class="pill" id="edMm">元模型 —</span>
+              <input id="pFilter" placeholder="过滤：标签 / 类型 / 定义类" />
+              <label class="chk"><input type="checkbox" id="pFilled" /> 只看有值</label>
+              <span class="dim">|</span>
+              <input id="pNewKey" placeholder="新键名" style="max-width:130px" />
+              <button class="ghost small" id="pAddKey">+ 自定义键</button>
+              <div class="spacer"></div>
+              <span class="dim" id="pSelInfo">选中树中的节点查看详情</span>
             </div>
+            <div class="ptree" id="pTree"><div class="empty">先在左侧内容树里选一个元素</div></div>
           </div>
 
           <div class="edSec" data-epp="refs">
@@ -607,16 +637,29 @@ let pending = new Map();      // uid -> 待提交变更项
 let branchHeads = {};         // 分支名 -> head commit
 let edDirty = false;
 let treeRepo = null;
+let pSel = null;              // 属性树里当前选中的节点描述
+let pCollapsed = new Set();   // 折叠的节点 key
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtVal(v){ return (typeof v==='object' && v!==null) ? JSON.stringify(v) : String(v==null?'':v); }
+function cloneVal(v){ return (typeof v==='object' && v!==null) ? JSON.parse(JSON.stringify(v)) : v; }
+
+// 元模型 item -> 属性树里的稳定 key
+function itemKey(it){
+  if(it.kind==='extra') return 'x:'+it.key;
+  if(it.kind==='ref')   return 'r:'+it.name;
+  return 'a:'+it.name;
+}
 
 function makeEdit(d){
+  const attrs = {};
+  for(const [k,v] of Object.entries(d.attrs || {})) attrs[k] = cloneVal(v);
   return {
     uid: d.uid, path: d.path || '', cls: d.cls || '', sn: d.sn || '',
-    attrList: Object.entries(d.attrs || {}).map(([k,v]) => ({ k, v: fmtVal(v) })),
+    attrsObj: attrs,
     refList: (d.refs_out || []).map(r => ({ feat: r.feat, tgt: r.tgt })),
     refsIn: d.refs_in || [],
+    schema: d.schema || null,
     isNew: !!d.isNew,
   };
 }
@@ -679,11 +722,16 @@ function renderTree(nodes, container, depth){
 
 async function selectElement(uid, row){
   try{
-    const r = await api('GET', `/api/repos/${repoId}/elements/${encodeURIComponent(uid)}`);
-    edit = makeEdit(r.element);
+    const [det, sch] = await Promise.all([
+      api('GET', `/api/repos/${repoId}/elements/${encodeURIComponent(uid)}`),
+      api('GET', `/api/repos/${repoId}/elements/${encodeURIComponent(uid)}/schema`).catch(e => null),
+    ]);
+    edit = makeEdit(det.element);
+    edit.schema = sch;                 // 元模型驱动的属性树
     document.querySelectorAll('.tnode.sel').forEach(x => x.classList.remove('sel'));
     if(row) row.classList.add('sel');
     edDirty = false;
+    pSel = null; pCollapsed.clear();
     renderEdit();
     const ind = $('#edCollab'); if(ind) ind.style.display='none';
   }catch(e){ toast(e.message,'err'); }
@@ -691,33 +739,337 @@ async function selectElement(uid, row){
 window.edOpen = uid => selectElement(uid, null);
 
 function renderEdit(){
-  if(!edit){ $('#edUid').textContent='未选择元素'; $('#edUid').className='pill'; return; }
+  if(!edit){
+    $('#edUid').textContent='未选择元素'; $('#edUid').className='pill';
+    $('#pTree').innerHTML='<div class="empty">先在左侧内容树里选一个元素</div>';
+    return;
+  }
   $('#edUid').textContent = edit.isNew ? '新建元素' : edit.uid;
   $('#edUid').className = 'pill ' + (edit.isNew ? 'new' : '');
   $('#edSnTip').textContent = (edit.cls||'—') + '   ' + (edit.path||'');
-  $('#fUid').value = edit.uid;
-  $('#fPath').value = edit.path;
-  $('#fCls').value = edit.cls;
-  $('#fSn').value = edit.sn;
-  renderAttrs(); renderRefs(); renderRefIn(); renderRaw();
+  renderPropTree();
+  renderRefs(); renderRefIn(); renderRaw();
   $('#kidBody').innerHTML=''; const kc=$('#kidCount'); if(kc) kc.textContent='';
 }
 
-function attrRow(a){
-  const d=document.createElement('div'); d.className='attrRow';
-  const k=document.createElement('input'); k.placeholder='key'; k.value=a.k;
-  const v=document.createElement('input'); v.placeholder='value'; v.value=a.v;
-  const del=document.createElement('button'); del.className='ghost small'; del.textContent='×';
-  k.oninput=()=>{ a.k=k.value; markDirty(); };
-  v.oninput=()=>{ a.v=v.value; markDirty(); };
-  del.onclick=()=>{ edit.attrList = edit.attrList.filter(x=>x!==a); renderAttrs(); markDirty(); };
-  d.append(k,v,del); return d;
+/* ============================================================
+   属性树（元模型驱动）
+   根 -> 身份 / 属性(ecore EAttribute) / 引用(ecore EReference) / 其他键
+   - 能编辑哪些字段完全来自 schema（即 ecore 原模型）
+   - 点击节点选中，右侧信息条显示类型/多重性/定义类
+   - 值控件按 eType 决定：string/integer/number/boolean/date/enum
+   ============================================================ */
+let pDetails = {};
+
+function readAttr(it){
+  if(it.label==='SHORT-NAME') return edit.sn;
+  if(it.kind==='extra') return edit.attrsObj[it.key];
+  const k = it.valueKey || it.label;
+  return Object.prototype.hasOwnProperty.call(edit.attrsObj,k) ? edit.attrsObj[k] : undefined;
 }
-function renderAttrs(){
-  const box=$('#attrBox'); box.innerHTML='';
-  if(!edit) return;
-  for(const a of edit.attrList) box.appendChild(attrRow(a));
-  if(!edit.attrList.length) box.innerHTML='<div class="dim" style="font-size:12px">无属性，点「+ 属性」添加</div>';
+function writeAttr(it, val){
+  if(it.label==='SHORT-NAME'){ edit.sn = val==null?'':String(val); return; }
+  const k = it.kind==='extra' ? it.key : (it.valueKey || it.label);
+  if(it.kind!=='extra') it.valueKey = k;
+  edit.attrsObj[k] = val;
+}
+function dropAttr(it){
+  if(it.kind==='extra'){ delete edit.attrsObj[it.key]; return; }
+  delete edit.attrsObj[it.valueKey || it.label];
+  it.valueKey = null;
+}
+function hasValue(it){
+  if(it.label==='UUID') return true;
+  if(it.kind==='ref') return (it.count||0) > 0;
+  const v = readAttr(it);
+  if(v==null) return false;
+  if(typeof v==='string') return v.trim()!=='';
+  if(Array.isArray(v)) return v.length>0;
+  return true;
+}
+function matchFilter(it,q){
+  if(!q) return true;
+  return [it.label,it.name,it.type,it.definedIn,it.category]
+    .filter(Boolean).join(' ').toLowerCase().includes(q);
+}
+
+function nrow(o){
+  const row=document.createElement('div');
+  row.className='pnode'+(o.key && pSel===o.key?' sel':'');
+  row.style.paddingLeft=(6+o.depth*16)+'px';
+  if(o.key) row.dataset.key=o.key;
+  const caret=document.createElement('span'); caret.className='pcaret';
+  caret.textContent=o.hasKids?(o.open?'▾':'▸'):'';
+  const icon=document.createElement('span'); icon.className='picon '+(o.iconCls||''); icon.textContent=o.icon||'';
+  const main=document.createElement('span'); main.className='pmain';
+  const nm=document.createElement('span'); nm.className='pname'; nm.textContent=o.name||'';
+  main.appendChild(nm);
+  if(o.typeTxt){ const t=document.createElement('span'); t.className='ptype'; t.textContent=o.typeTxt; main.appendChild(t); }
+  for(const b of (o.badges||[])){
+    const s=document.createElement('span'); s.className='pbadge '+(b.cls||''); s.textContent=b.txt; main.appendChild(s);
+  }
+  if(o.def){ const s=document.createElement('span'); s.className='pdef'; s.textContent=o.def; main.appendChild(s); }
+  row.append(caret,icon,main);
+  if(o.ctl){
+    const c=document.createElement('span'); c.className='pctl';
+    (Array.isArray(o.ctl)?o.ctl:[o.ctl]).forEach(x=>c.appendChild(x));
+    row.appendChild(c);
+  }
+  row.onclick = ev => {
+    if(ev.target.closest('.pctl')) return;          // 点控件不改选中
+    if(o.hasKids) toggleKey(o.key); else selectNode(o.key);
+  };
+  return row;
+}
+function toggleKey(k){
+  if(!k) return;
+  selectNode(k);
+  if(pCollapsed.has(k)) pCollapsed.delete(k); else pCollapsed.add(k);
+  renderPropTree();
+}
+function selectNode(k){
+  if(!k) return;
+  pSel = k;
+  const box=$('#pTree');
+  box.querySelectorAll('.pnode.sel').forEach(x=>x.classList.remove('sel'));
+  const row=[...box.querySelectorAll('.pnode')].find(x=>x.dataset.key===k);
+  if(row) row.classList.add('sel');
+  $('#pSelInfo').textContent = pDetails[k] || String(k);
+}
+
+function roInput(v){ const i=document.createElement('input'); i.value=fmtVal(v==null?'':v); i.readOnly=true; return i; }
+function txtInput(v,oninput,opts){
+  const i=document.createElement('input');
+  i.value = fmtVal(v==null?'':v);
+  if(opts&&opts.placeholder) i.placeholder=opts.placeholder;
+  i.oninput=()=>oninput(i.value);
+  return i;
+}
+function numInput(v,int,oninput){
+  const i=document.createElement('input'); i.type='number'; if(int) i.step='1';
+  i.value = v==null?'':String(v);
+  i.oninput=()=>{
+    if(i.value===''){ oninput(null); return; }
+    const n = int ? parseInt(i.value,10) : parseFloat(i.value);
+    if(Number.isNaN(n)) return;
+    oninput(n);
+  };
+  return i;
+}
+function selInput(pairs, cur, onchange){
+  const s=document.createElement('select');
+  for(const [v,t] of pairs){ const o=document.createElement('option'); o.value=v; o.textContent=t; s.appendChild(o); }
+  s.value=cur==null?'':String(cur);
+  s.onchange=()=>onchange(s.value);
+  return s;
+}
+
+function singleCtl(it){
+  const val=readAttr(it);
+  const cat=it.category||'string';
+  if(cat==='enum' || (it.enum && it.enum.length)){
+    const lits=it.enum||[];
+    const cur=val==null?'':String(val);
+    const pairs=[['','（未设置）']];
+    if(cur && !lits.includes(cur)) pairs.push([cur, cur+'（当前值）']);
+    for(const l of lits) pairs.push([l,l]);
+    return selInput(pairs, cur, v=>{ writeAttr(it, v===''?null:v); markDirty(); });
+  }
+  if(cat==='boolean'){
+    return selInput([['','（未设置）'],['true','true'],['false','false']],
+      val===true?'true':(val===false?'false':''),
+      v=>{ writeAttr(it, v===''?null:(v==='true')); markDirty(); });
+  }
+  if(cat==='integer') return numInput(val,true, n=>{ writeAttr(it,n); markDirty(); });
+  if(cat==='number')  return numInput(val,false,n=>{ writeAttr(it,n); markDirty(); });
+  if(cat==='date')    return txtInput(val, v=>{ writeAttr(it, v===''?null:v); markDirty(); }, {placeholder:'YYYY-MM-DDTHH:MM:SS'});
+  return txtInput(val, v=>{ writeAttr(it, v===''?null:v); markDirty(); });
+}
+
+function multiCtl(it){
+  const wrap=document.createElement('div'); wrap.className='plist';
+  let arr=readAttr(it);
+  if(!Array.isArray(arr)) arr = (arr==null||arr==='') ? [] : [arr];
+  const commit=()=>writeAttr(it, arr.slice());
+  const rebuild=()=>{
+    wrap.innerHTML='';
+    arr.forEach((v,idx)=>{
+      const row=document.createElement('div'); row.className='pit';
+      const inp=document.createElement('input'); inp.value=fmtVal(v);
+      inp.oninput=()=>{ arr[idx]=inp.value; commit(); markDirty(); };
+      const del=document.createElement('button'); del.className='ghost small'; del.textContent='×';
+      del.onclick=()=>{ arr.splice(idx,1); commit(); markDirty(); rebuild(); };
+      row.append(inp,del); wrap.appendChild(row);
+    });
+    const add=document.createElement('button'); add.className='ghost small'; add.textContent='+ 添加';
+    add.onclick=()=>{ arr.push(''); commit(); markDirty(); rebuild(); };
+    wrap.appendChild(add);
+  };
+  rebuild();
+  return wrap;
+}
+
+function attrNode(it, depth){
+  const key=itemKey(it);
+  const val=readAttr(it);
+  const badges=[];
+  if(it.readOnly) badges.push({txt:'只读',cls:'ro'});
+  if(it.multi) badges.push({txt:'多值',cls:'multi'});
+  if(it.identifier) badges.push({txt:'标识',cls:''});
+  if(it.lower>0) badges.push({txt:'必填',cls:'req'});
+  pDetails[key]=`${it.label} · ecore:${it.name} · ${it.type||'—'}/${it.category} · `+
+    `多重性 [${it.lower}..${it.upper<0?'*':it.upper}] · 定义于 ${it.definedIn}`+
+    `${it.default?` · 默认 ${it.default}`:''}${it.readOnly?' · 派生/瞬态，只读':''}`;
+  const readonly = it.readOnly || it.label==='UUID';
+  let ctl;
+  if(readonly) ctl=roInput(it.label==='UUID'?edit.uid:val);
+  else if(it.multi) ctl=multiCtl(it);
+  else ctl=singleCtl(it);
+  const cells = Array.isArray(ctl)?ctl:[ctl];
+  if(!readonly && hasValue(it)){
+    const clr=document.createElement('button'); clr.className='ghost small'; clr.textContent='清除';
+    clr.title='清空该属性';
+    clr.onclick=()=>{ dropAttr(it); markDirty(); renderPropTree(); };
+    cells.push(clr);
+  }
+  return nrow({key,depth,icon:(it.label==='UUID'?'#':'a'),iconCls:'attr',name:it.label,
+    typeTxt:it.type||it.category,badges,def:it.definedIn,ctl:cells});
+}
+
+function pushRef(frag, it, depth){
+  const key=itemKey(it);
+  const n=it.count||0;
+  const badges=[];
+  if(it.readOnly) badges.push({txt:'只读',cls:'ro'});
+  if(it.multi) badges.push({txt:'多值',cls:'multi'});
+  badges.push({txt:it.containment?'包含':'引用',cls:''});
+  badges.push({txt:n+' 目标',cls:n?'':'ro'});
+  if(it.unmapped) badges.push({txt:'元模型外',cls:'req'});
+  pDetails[key] = it.unmapped
+    ? `${it.label} · 不在该类 EReference 中（历史数据/私有标签，按真实数据兜底展示）· ${n} 个目标`
+    : `${it.label} · ecore:${it.name} · 目标 ${it.type||'—'} · `+
+      `多重性 [${it.lower}..${it.upper<0?'*':it.upper}] · 定义于 ${it.definedIn||'—'}`+
+      `${it.opposite?` · 反向 ${it.opposite}`:''}${it.containment?' · 包含关系（子元素）':''}`;
+  const open=!pCollapsed.has(key);
+  const ctl = it.readOnly ? null : addRefCtl(it);
+  frag.appendChild(nrow({key,depth,icon:'R',iconCls:'ref'+(it.unmapped?' um':''),hasKids:n>0,open,name:it.label,
+    typeTxt:it.type,badges,def:it.unmapped?'元模型外':it.definedIn,ctl}));
+  if(!open) return;
+  const tgts=it.targets||[];
+  for(const t of tgts){
+    const tk=key+'/'+t.tgt;
+    pDetails[tk]=`目标 ${t.cls||'?'} · ${t.path||t.tgt} · feat=${t.feat}`;
+    const row=document.createElement('div');
+    row.className='ptgt';
+    row.style.paddingLeft=(6+(depth+1)*16)+'px';
+    row.innerHTML=`<span class="psn">${esc(t.sn||t.tgt)}</span>`+
+      `<span class="dim">${esc(t.cls||'')}</span><span class="ppath">${esc(t.path||'')}</span>`;
+    const go=document.createElement('button'); go.className='ghost small'; go.textContent='打开';
+    go.onclick=ev=>{ ev.stopPropagation(); if(t.tgt) selectElement(t.tgt,null); };
+    const rm=document.createElement('button'); rm.className='ghost small'; rm.textContent='×';
+    rm.onclick=ev=>{ ev.stopPropagation(); removeRef(it,t); };
+    row.append(go,rm);
+    row.onclick=()=>selectNode(tk);
+    if(pSel===tk) row.classList.add('sel');
+    frag.appendChild(row);
+  }
+  if(!tgts.length){
+    const d=document.createElement('div'); d.className='pempty';
+    d.style.paddingLeft=(6+(depth+1)*16)+'px'; d.textContent='（无目标）';
+    frag.appendChild(d);
+  }
+}
+
+function addRefCtl(it){
+  const inp=document.createElement('input');
+  inp.placeholder='目标 uid'; inp.style.width='150px';
+  const btn=document.createElement('button'); btn.className='ghost small'; btn.textContent='+ 引用';
+  btn.onclick=()=>{
+    const tgt=inp.value.trim(); if(!tgt) return;
+    if(edit.refList.some(r=>r.feat===it.label && r.tgt===tgt)) return toast('该引用已存在','err');
+    edit.refList.push({feat:it.label, tgt});
+    inp.value=''; markDirty(); renderRefs();
+    toast('已添加引用 '+it.label+' → '+tgt,'ok');
+  };
+  return [inp, btn];
+}
+function removeRef(it,t){
+  edit.refList = edit.refList.filter(r => !(r.feat===t.feat && r.tgt===t.tgt));
+  it.targets = (it.targets||[]).filter(x=>x.tgt!==t.tgt);
+  it.count = it.targets.length;
+  markDirty(); renderRefs(); renderPropTree();
+  toast('已移除引用','ok');
+}
+
+function renderPropTree(){
+  const box=$('#pTree'); box.innerHTML=''; pDetails={};
+  const sch=edit.schema, mm=sch&&sch.metamodel;
+  $('#edMm').textContent = (mm&&mm.resolved)
+    ? `${mm.class} · ${mm.featureCount} 字段`
+    : (edit.cls ? `${edit.cls} · 未命中元模型` : '元模型 —');
+  $('#edMm').className = 'pill ' + ((mm&&mm.resolved)?'new':'');
+
+  const q=($('#pFilter').value||'').trim().toLowerCase();
+  const onlyFilled=$('#pFilled').checked;
+  const frag=document.createDocumentFragment();
+
+  // 根：元素自身
+  const rootOpen=!pCollapsed.has('root');
+  pDetails['root']=`元素根节点 · uid=${edit.uid} · class=${edit.cls||'—'} · ${edit.path||'（无路径）'}`+
+    (mm&&mm.resolved?` · 继承链：${(mm.supers||[]).join(' → ')||'（无）'}`:'');
+  frag.appendChild(nrow({key:'root',depth:0,icon:'◆',iconCls:'grp',hasKids:true,open:rootOpen,
+    name:(edit.sn||edit.uid), typeTxt:edit.cls||'（未指定类）',
+    badges:[{txt:edit.isNew?'新建':'已存在',cls:edit.isNew?'new':''}],
+    def:(mm&&mm.resolved)?mm.source.join(' + '):''}));
+
+  if(rootOpen){
+    // 身份（结构字段，非 ecore 属性）
+    frag.appendChild(nrow({key:'id',depth:1,icon:'ⓘ',iconCls:'grp',name:'身份 Identity',def:'元素标识与定位'}));
+    frag.appendChild(nrow({key:'f:uid',depth:2,icon:'#',iconCls:'attr',name:'UID',typeTxt:'string',
+      badges:[{txt:'只读',cls:'ro'}],ctl:roInput(edit.uid)}));
+    frag.appendChild(nrow({key:'f:path',depth:2,icon:'P',iconCls:'attr',name:'PATH',typeTxt:'string',
+      ctl:txtInput(edit.path, v=>{ edit.path=v; markDirty(); }, {placeholder:'/AUTOSAR/...'})}));
+    const clsI=txtInput(edit.cls, v=>{ edit.cls=v; markDirty(); }, {placeholder:'AR-PACKAGE'});
+    clsI.onchange=async()=>{ await refreshClassSchema(); renderPropTree(); };
+    frag.appendChild(nrow({key:'f:cls',depth:2,icon:'C',iconCls:'attr',name:'CLASS',typeTxt:'string',
+      badges:[{txt:'改后自动重载字段',cls:''}],ctl:clsI}));
+
+    // 元模型分组
+    const groups=(sch&&sch.groups)||[];
+    if(!groups.length){
+      const d=document.createElement('div'); d.className='pempty';
+      d.textContent='未取到元模型 schema（该 class 不在 ecore 中）。可用「其他键」手工维护字段。';
+      frag.appendChild(d);
+    }
+    for(const g of groups){
+      const items=(g.items||[]).filter(it => matchFilter(it,q) && (!onlyFilled || hasValue(it)));
+      if(onlyFilled && !items.length) continue;
+      const gkey='g:'+g.id;
+      const gopen=!pCollapsed.has(gkey);
+      pDetails[gkey]=`${g.title} · ${items.length} 项${q?'（已过滤）':''}`;
+      frag.appendChild(nrow({key:gkey,depth:1,icon:(g.id==='attr'?'A':(g.id==='ref'?'R':'K')),
+        iconCls:'grp',hasKids:true,open:gopen,name:g.title,badges:[{txt:String(items.length)}]}));
+      if(!gopen) continue;
+      for(const it of items){
+        if(it.kind==='ref') pushRef(frag,it,2); else frag.appendChild(attrNode(it,2));
+      }
+      if(!items.length){
+        const d=document.createElement('div'); d.className='pempty';
+        d.style.paddingLeft=(6+2*16)+'px'; d.textContent='（无匹配项）';
+        frag.appendChild(d);
+      }
+    }
+  }
+  box.appendChild(frag);
+  if(!box.childElementCount) box.innerHTML='<div class="pfiltered">无匹配</div>';
+  $('#pSelInfo').textContent = (pSel && pDetails[pSel]) ? pDetails[pSel] : '选中树中的节点查看详情';
+}
+
+async function refreshClassSchema(){
+  if(!edit || !edit.cls) return;
+  try{
+    edit.schema = await api('GET', `/api/repos/${repoId}/schema?cls=${encodeURIComponent(edit.cls)}`);
+  }catch(e){ /* 元模型取不到就退化为仅身份+其他键 */ }
 }
 function refRow(r){
   const d=document.createElement('div'); d.className='refRow';
@@ -752,12 +1104,10 @@ function markDirty(){ edDirty = true; renderRaw(); }
 function collectChange(){
   if(!edit) return null;
   const attrs = {};
-  for(const {k, v} of edit.attrList){
-    const key = (k||'').trim(); if(!key) continue;
-    const t = (v||'').trim();
-    let val = v;
-    if(t.startsWith('{') || t.startsWith('[')){ try{ val = JSON.parse(t); }catch(e){ val = v; } }
-    attrs[key] = val;
+  for(const [k,v] of Object.entries(edit.attrsObj)){
+    if(v==null) continue;
+    if(typeof v==='string' && v.trim()==='') continue;
+    attrs[k] = v;
   }
   const refs_out = edit.refList
     .filter(r => (r.feat||'').trim() && (r.tgt||'').trim())
@@ -805,19 +1155,28 @@ $('#edRevert').onclick = async () => {
   await selectElement(edit.uid, document.querySelector('.tnode.sel'));
   toast('已放弃修改','ok');
 };
-$('#edNew').onclick = () => {
+$('#edNew').onclick = async () => {
   edit = makeEdit({ uid:'new-'+Math.random().toString(36).slice(2,10), path:'', cls:'SW-COMPONENT', sn:'', attrs:{}, refs_out:[], refs_in:[], isNew:true });
   document.querySelectorAll('.tnode.sel').forEach(x=>x.classList.remove('sel'));
   edDirty = true;
+  pSel=null; pCollapsed.clear();
+  await refreshClassSchema();          // 按类名预取元模型字段
   renderEdit();
-  $('#fPath').focus();
+  $('#pFilter').focus();
 };
-$('#fPath').oninput = e => { if(edit){ edit.path=e.target.value; markDirty(); } };
-$('#fCls').oninput  = e => { if(edit){ edit.cls=e.target.value;  markDirty(); } };
-$('#fSn').oninput   = e => { if(edit){ edit.sn=e.target.value;    markDirty(); } };
-$('#addAttr').onclick = () => { if(!edit) return; edit.attrList.push({k:'',v:''}); renderAttrs(); };
 $('#addRef').onclick  = () => { if(!edit) return; edit.refList.push({feat:'',tgt:''}); renderRefs(); };
 $('#edTreeReload').onclick = edLoadRoot;
+
+// 属性树工具条
+$('#pFilter').oninput = () => { if(edit) renderPropTree(); };
+$('#pFilled').onchange = () => { if(edit) renderPropTree(); };
+$('#pAddKey').onclick = () => {
+  if(!edit) return toast('先选一个元素','err');
+  const k = $('#pNewKey').value.trim(); if(!k) return toast('请输入键名','err');
+  edit.attrsObj[k] = '';
+  $('#pNewKey').value = '';
+  markDirty(); renderPropTree();
+};
 
 $('#edSearchBtn').onclick = async () => {
   const q = $('#edSearch').value.trim();

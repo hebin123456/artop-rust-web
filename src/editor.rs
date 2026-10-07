@@ -9,13 +9,14 @@
 //!   - `get()`     -> OverviewPage：元素元数据 + 属性 + 出/入向引用
 //!   - `search()`  -> 属性页里的"查找元素"下拉框
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::{json, Value};
 use sqlx::{MySqlPool, Row};
 
-use crate::error::AppResult;
+use crate::error::{AppError, AppResult};
+use crate::metamodel::{Feature, Metamodel};
 
 #[derive(Debug, Serialize)]
 pub struct ElementBrief {
@@ -244,4 +245,295 @@ pub async fn get(db: &MySqlPool, repo_id: i64, uid: &str) -> AppResult<Option<Va
         "refs_out": refs_dir(db, repo_id, uid, true).await?,
         "refs_in": refs_dir(db, repo_id, uid, false).await?,
     })))
+}
+
+// ===================== 属性树 schema（元模型驱动） =====================
+
+fn is_empty_attr(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Array(a) => a.is_empty(),
+        Value::Object(o) => o.is_empty(),
+        _ => false,
+    }
+}
+
+/// 取属性的当前值：先认特殊字段（SHORT-NAME/UUID），再按 ARXML 标签、ecore 名去 attrs 里找。
+///
+/// 返回 (值, 命中的原始键)。键要带回去，因为 blob 里的 attrs 键可能是 ARXML 标签、
+/// 也可能是 ecore 名，编辑器写回时必须沿用同一个键，否则会出现"改完没生效/多出一份"。
+fn attr_value(
+    alow: &HashMap<String, Value>,
+    raw_keys: &HashMap<String, String>,
+    uid: &str,
+    sn: &str,
+    f: &Feature,
+) -> (Value, Option<String>) {
+    match f.x.as_deref() {
+        Some("SHORT-NAME") => return (json!(sn), Some("SHORT-NAME".to_string())),
+        Some("UUID") => return (json!(uid), Some("UUID".to_string())),
+        _ => {}
+    }
+    for cand in [f.x.as_deref(), Some(f.f.as_str())] {
+        if let Some(c) = cand {
+            let lc = c.to_lowercase();
+            if let Some(v) = alow.get(&lc) {
+                return (v.clone(), raw_keys.get(&lc).cloned());
+            }
+        }
+    }
+    (Value::Null, None)
+}
+
+/// 属性编辑器 schema：把元素映射到元模型，回答"这个类能编辑哪些字段、当前值是什么"。
+///
+/// 返回结构直接对应前端的属性树：
+///   metamodel      -> 这个元素属于哪个 EClass、继承链、来源 ecore
+///   groups[attr]   -> 可编辑标量属性（类型/多重性/枚举候选/是否只读）
+///   groups[ref]    -> 引用属性（含既有目标元素，可点进去）
+pub async fn schema(
+    db: &MySqlPool,
+    mm: &Metamodel,
+    repo_id: i64,
+    uid: &str,
+) -> AppResult<Value> {
+    let row = sqlx::query(
+        "SELECT e.element_uid, e.path, e.cls, b.sn, b.body \
+         FROM element e JOIN content_blob b \
+           ON b.repo_id = e.repo_id AND b.blob_id = e.blob_id \
+         WHERE e.repo_id = ? AND e.element_uid = ?",
+    )
+    .bind(repo_id)
+    .bind(uid)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("元素 {uid} 不存在")))?;
+
+    let cls: String = row.get("cls");
+    let sn: String = row.get("sn");
+    let path: String = row.get("path");
+    let body: Value = row.get("body");
+    let attrs = body.get("attrs").cloned().unwrap_or_else(|| json!({}));
+
+    let mut alow: HashMap<String, Value> = HashMap::new();
+    // 小写键 -> 原始键，写回时沿用原键，避免大小写/别名造成重复字段
+    let mut raw_keys: HashMap<String, String> = HashMap::new();
+    if let Some(o) = attrs.as_object() {
+        for (k, v) in o {
+            let lc = k.to_lowercase();
+            alow.insert(lc.clone(), v.clone());
+            raw_keys.entry(lc).or_insert_with(|| k.clone());
+        }
+    }
+
+    // 出向引用按 ARXML 标签归组
+    let refs = refs_dir(db, repo_id, uid, true).await?;
+    let mut ref_by_feat: HashMap<String, Vec<Value>> = HashMap::new();
+    for r in &refs {
+        if let Some(feat) = r.get("feat").and_then(|v| v.as_str()) {
+            ref_by_feat.entry(feat.to_string()).or_default().push(r.clone());
+        }
+    }
+
+    let e = expand(mm, &cls, &alow, &raw_keys, uid, &sn, &ref_by_feat);
+
+    // 元模型之外的自定义键（历史遗留 / 客户私有字段）：仍然可见可改，不丢数据
+    let mut extra: Vec<Value> = Vec::new();
+    if let Some(o) = attrs.as_object() {
+        for (k, v) in o {
+            if e.matched.contains(&k.to_lowercase()) {
+                continue;
+            }
+            extra.push(json!({
+                "name": k, "label": k, "key": k, "kind": "extra",
+                "category": "string", "value": v, "hasValue": true,
+                "multi": false, "readOnly": false,
+            }));
+        }
+    }
+
+    Ok(json!({
+        "repo_id": repo_id,
+        "element": { "uid": uid, "path": path, "cls": cls, "sn": sn, "attrs": attrs },
+        "metamodel": {
+            "class": e.cname,
+            "arxml": e.carxml,
+            "abstract": e.cabstract,
+            "supers": e.csupers,
+            "source": mm.source,
+            "resolved": e.resolved,
+            "featureCount": e.attrs.len() + e.refs.len(),
+        },
+        "groups": [
+            { "id": "attr", "title": "属性 Attributes", "items": e.attrs },
+            { "id": "ref",  "title": "引用 References", "items": e.refs },
+            { "id": "extra", "title": "其他键 Others", "items": extra },
+        ],
+    }))
+}
+
+/// 元模型静态形态：只回答"这个类声明了哪些可编辑字段"，不带任何当前值。
+/// 供"新建元素"按类名预取属性树用，这样还没入库的新元素也能看到 ecore 声明的字段。
+pub fn class_schema(mm: &Metamodel, cls: &str) -> Value {
+    let e = expand(mm, cls, &HashMap::new(), &HashMap::new(), "", "", &HashMap::new());
+    json!({
+        "metamodel": {
+            "class": e.cname,
+            "arxml": e.carxml,
+            "abstract": e.cabstract,
+            "supers": e.csupers,
+            "source": mm.source,
+            "resolved": e.resolved,
+            "featureCount": e.attrs.len() + e.refs.len(),
+        },
+        "groups": [
+            { "id": "attr", "title": "属性 Attributes", "items": e.attrs },
+            { "id": "ref",  "title": "引用 References", "items": e.refs },
+            { "id": "extra", "title": "其他键 Others", "items": [] },
+        ],
+    })
+}
+
+/// 一次元模型展开的结果
+struct Expanded {
+    cname: String,
+    carxml: String,
+    cabstract: bool,
+    csupers: Vec<String>,
+    resolved: bool,
+    attrs: Vec<Value>,
+    refs: Vec<Value>,
+    /// 被元模型特征命中过的原始 attrs 键（小写）
+    matched: HashSet<String>,
+}
+
+/// 拉开一个 EClass 的继承链，生成属性树的 item 列表。
+/// 传空的 alow/ref_by_feat 就是"静态形态"（新建元素），传真实数据就是"带当前值"。
+#[allow(clippy::too_many_arguments)]
+fn expand(
+    mm: &Metamodel,
+    cls: &str,
+    alow: &HashMap<String, Value>,
+    raw_keys: &HashMap<String, String>,
+    uid: &str,
+    sn: &str,
+    ref_by_feat: &HashMap<String, Vec<Value>>,
+) -> Expanded {
+    let class = mm.class_by_arxml(cls);
+    let (cname, carxml, cabstract, csupers) = match class {
+        Some(c) => (
+            c.n.clone(),
+            c.x.clone().unwrap_or_else(|| cls.to_string()),
+            c.ab,
+            c.sup.clone(),
+        ),
+        None => (cls.to_string(), cls.to_string(), false, vec![]),
+    };
+
+    let (mut attr_filled, mut attr_empty) = (Vec::new(), Vec::new());
+    let (mut ref_filled, mut ref_empty) = (Vec::new(), Vec::new());
+    let mut matched: HashSet<String> = HashSet::new();
+    // 被元模型引用特征命中过的 ARXML 标签；剩下的 refs_out 就是"元模型外"的引用
+    let mut matched_refs: HashSet<String> = HashSet::new();
+
+    if class.is_some() {
+        for (definer, f) in mm.flatten(&cname) {
+            let label = f.x.clone().unwrap_or_else(|| f.f.clone());
+            let multi = f.ub < 0 || f.ub > 1;
+            if f.k == "attr" {
+                let (cat, lits) = mm.type_info(f.t.as_deref());
+                let (v, vkey) = attr_value(alow, raw_keys, uid, sn, &f);
+                if let Some(k) = &vkey {
+                    matched.insert(k.to_lowercase());
+                }
+                let item = json!({
+                    "name": f.f,
+                    "label": label,
+                    "kind": "attr",
+                    "type": f.t,
+                    "category": cat,
+                    "enum": lits,
+                    "lower": f.lb,
+                    "upper": f.ub,
+                    "multi": multi,
+                    "default": f.dv,
+                    "readOnly": f.der || f.tr,
+                    "identifier": f.id,
+                    "definedIn": definer,
+                    // 写回时沿用的原始键；为 null 表示用 label 作为新键
+                    "valueKey": vkey,
+                    "hasValue": !is_empty_attr(&v),
+                    "value": v,
+                });
+                if is_empty_attr(&v) {
+                    attr_empty.push(item);
+                } else {
+                    attr_filled.push(item);
+                }
+            } else {
+                matched_refs.insert(label.clone());
+                let targets = ref_by_feat.get(&label).cloned().unwrap_or_default();
+                let item = json!({
+                    "name": f.f,
+                    "label": label,
+                    "labelPlural": f.xp,
+                    "kind": "ref",
+                    "type": f.t,
+                    "category": "element",
+                    "lower": f.lb,
+                    "upper": f.ub,
+                    "multi": multi,
+                    "containment": f.c,
+                    "opposite": f.opp,
+                    "readOnly": f.der || f.tr,
+                    "definedIn": definer,
+                    "unmapped": false,
+                    "targets": targets,
+                    "count": targets.len(),
+                });
+                if targets.is_empty() {
+                    ref_empty.push(item);
+                } else {
+                    ref_filled.push(item);
+                }
+            }
+        }
+    }
+    attr_filled.append(&mut attr_empty);
+    ref_filled.append(&mut ref_empty);
+
+    // 元模型外的引用：feat 不在该类的 EReference 里（历史数据/私有标签），仍要显示，
+    // 否则引用会在属性树里凭空消失。归到引用组末尾，并标 unmapped 供前端提示。
+    let mut unmapped: Vec<Value> = ref_by_feat
+        .iter()
+        .filter(|(feat, _)| !matched_refs.contains(*feat))
+        .map(|(feat, targets)| {
+            json!({
+                "name": feat, "label": feat, "kind": "ref", "type": Value::Null,
+                "category": "element", "lower": 0, "upper": -1, "multi": true,
+                "containment": false, "opposite": Value::Null, "readOnly": false,
+                "definedIn": Value::Null, "unmapped": true,
+                "targets": targets, "count": targets.len(),
+            })
+        })
+        .collect();
+    unmapped.sort_by(|a, b| {
+        a["label"].as_str().unwrap_or("").cmp(b["label"].as_str().unwrap_or(""))
+    });
+    let refs = ref_filled
+        .into_iter()
+        .chain(unmapped)
+        .collect::<Vec<_>>();
+
+    Expanded {
+        cname,
+        carxml,
+        cabstract,
+        csupers,
+        resolved: class.is_some(),
+        attrs: attr_filled,
+        refs,
+        matched,
+    }
 }
