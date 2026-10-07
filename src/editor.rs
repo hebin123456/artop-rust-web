@@ -170,6 +170,31 @@ pub async fn tree(db: &MySqlPool, repo_id: i64, parent: &str, limit: i64) -> App
         }));
     }
 
+    // ARTOP 的内容树天然以 AUTOSAR 文档根为根节点：AutosarFormEditor.getModelRoot()
+    // 拿到的就是那个 GAUTOSAR，树只是把它当 pageInput 画出来，跟仓库里有没有内容无关。
+    // 所以根层级一定得有 AUTOSAR：已经建过就用地道的那个元素，还没建过（空仓库）就摆一个
+    // "待创建"的合成根，用户从它开始长出 AR-PACKAGE，而不是面对一棵空树无从下手。
+    if prefix.is_empty() {
+        match nodes.iter_mut().find(|n| n["name"] == "AUTOSAR") {
+            Some(n) => n["root"] = json!(true),
+            None => nodes.insert(
+                0,
+                json!({
+                    "name": "AUTOSAR",
+                    "path": "/AUTOSAR",
+                    "is_element": false,
+                    "has_children": false,
+                    "uid": Value::Null,
+                    "cls": "AUTOSAR",
+                    "sn": "AUTOSAR",
+                    "root": true,
+                }),
+            ),
+        }
+        // 稳定排序把 AUTOSAR 顶到第一位（其余顶层段只可能是历史遗留，保留可见不藏）
+        nodes.sort_by_key(|n| !n["root"].as_bool().unwrap_or(false));
+    }
+
     let truncated = nodes.len() as i64 >= limit;
     Ok(json!({
         "parent": parent,

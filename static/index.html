@@ -59,6 +59,9 @@
   .tnode{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap}
   .tnode:hover{background:#1b2531}
   .tnode.sel{background:#1d3a55}
+  .tnode.root{font-weight:600;background:#141a24}
+  .tnode.root .tcls{color:var(--brand)}
+  .tnode.root.mk .tnm{color:var(--warn)}
   .tnode .tw{width:14px;flex:none;color:var(--dim);font-size:11px;text-align:center;border-radius:4px}
   .tnode .tw.hit{cursor:pointer}
   .tnode .tw.hit:hover{background:#2a3040;color:var(--text)}
@@ -781,14 +784,14 @@ async function edLoadRoot(){
 function renderTree(nodes, container, depth, truncated){
   for(const n of nodes){
     const row = document.createElement('div');
-    row.className = 'tnode';
+    row.className = 'tnode' + (n.root ? ' root' : '') + (n.root && !n.is_element ? ' mk' : '');
     row.style.paddingLeft = (6 + depth*14) + 'px';
     const tw = document.createElement('span'); tw.className='tw' + (n.has_children?' hit':'');
     tw.textContent = n.has_children ? '▸' : (n.is_element ? '·' : ' ');
     const nm = document.createElement('span'); nm.className='tnm';
-    nm.textContent = n.is_element ? (n.sn || n.name) : n.name + '/';
+    nm.textContent = n.is_element ? (n.sn || n.name) : (n.root ? n.name : n.name + '/');
     const cl = document.createElement('span'); cl.className='tcls';
-    cl.textContent = n.is_element ? (n.cls || '') : 'package';
+    cl.textContent = n.is_element ? (n.cls || '') : (n.root ? 'AUTOSAR · 待创建' : 'package');
     row.append(tw, nm, cl);
     const kids = document.createElement('div');
     container.append(row, kids);
@@ -813,7 +816,11 @@ function renderTree(nodes, container, depth, truncated){
     // 展开只由箭头负责；点行只负责选中，两者不再耦合
     // （ARTOP 的行为：在 Contents Tree 里选元素，而不是"点一下顺带展开又换掉右栏"）
     tw.onclick = ev => { ev.stopPropagation(); toggle(); };
-    row.onclick = () => { if(n.is_element) selectElement(n.uid, row); };
+    row.onclick = () => {
+      if(n.is_element) selectElement(n.uid, row);
+      // 合成根还没落盘：点它进入"新建 AUTOSAR 根"表单，建完就能在下面挂 AR-PACKAGE
+      else if(n.root) newRoot(n.path || '/AUTOSAR');
+    };
     row.ondblclick = () => { if(n.has_children) toggle(); };
   }
   if(truncated){
@@ -1277,6 +1284,21 @@ $('#edNew').onclick = async () => {
   renderEdit();
   $('#pFilter').focus();
 };
+// 内容树天然以 AUTOSAR 文档根为根节点（ARTOP 的 AutosarFormEditor 就是拿 GAUTOSAR 当 pageInput）。
+// 空仓库里这个根还没落盘，点树上的合成根直接进入"新建 AUTOSAR 根"表单；
+// 保存推送后根就落盘，下面即可继续挂 AR-PACKAGE。
+async function newRoot(path){
+  if(!repoId) return toast('先创建一个仓库','err');
+  await loadCatalog();
+  edit = makeEdit({ uid:'new-'+Math.random().toString(36).slice(2,10), path: path||'/AUTOSAR', cls:'AUTOSAR',
+    sn:'AUTOSAR', attrs:{name:'AUTOSAR'}, refs_out:[], refs_in:[], isNew:true });
+  document.querySelectorAll('.tnode.sel').forEach(x=>x.classList.remove('sel'));
+  edDirty = true; pSel=null; pCollapsed.clear();
+  await refreshClassSchema();
+  await scopeClassesTo(parentOf(edit.path));
+  renderEdit();
+  $('#pFilter').focus();
+}
 $('#addRef').onclick  = () => { if(!edit) return; edit.refList.push({feat:'',tgt:''}); renderRefs(); };
 $('#edTreeReload').onclick = edLoadRoot;
 
@@ -1334,6 +1356,8 @@ $('#edCommit').onclick = async () => {
     const res = await api('POST', `/api/repos/${repoId}/push`, body);
     toast('已提交并推送 ' + res.commit_id.slice(0,8) + ' → ' + branch, 'ok');
     pending.clear(); renderPending(); loadBranches();
+    edLoadRoot();        // 推送后刷新内容树：新建的 AUTOSAR 根 / 子元素立刻可见
+    loadCatalog(true);   // 路径候选也跟着变
   }catch(e){ toast(e.message,'err'); }
 };
 $('#edClear').onclick = () => { pending.clear(); renderPending(); toast('已清空暂存','ok'); };
