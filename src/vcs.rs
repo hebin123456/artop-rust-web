@@ -88,6 +88,201 @@ pub async fn head_of(db: &MySqlPool, repo_id: i64, branch: &str) -> AppResult<Op
     Ok(r)
 }
 
+// ============ 元模型合法性校验 ============
+
+/// 按 autosar448.ecore 校验一笔推送。判据全部来自 ecore，不看调用方脸色：
+///   1. `cls` 必须是某个 EClass 的 ARXML 标签，且该类不能是抽象类；
+///   2. 路径形态合法，且**路径唯一**（同一仓库内一个路径只能有一个元素）；
+///   3. **父元素必须真实存在** —— 不允许"只有路径没有元素"的中间层；
+///   4. 父类的某个 containment EReference 的目标类型必须是子类的祖先。
+///      这是"SW-COMPONENT 不能直接挂在 AUTOSAR 下"这类非法归属的判据：
+///      全模型里只有 ARPackage.elements 能直接容纳 PackageableElement；
+///   5. 文档根只能是 AUTOSAR；
+///   6. 引用特征的标签必须在 ecore 里出现过（防拼错的垃圾键）；
+///   7. 删除父元素前必须已经没有子元素，否则会留下无归属的孤儿。
+///
+/// 元模型缺失时整体跳过（降级），避免把仓库锁死。
+async fn validate_changes(state: &AppState, repo_id: i64, changes: &[ChangeItem]) -> AppResult<()> {
+    if !state.mm.is_loaded() {
+        return Ok(());
+    }
+
+    // 同一批次里父子可能一起提交，先收集本批次的 path -> (cls, uid)；同路径重复即非法
+    let mut batch: HashMap<&str, (&str, &str)> = HashMap::new();
+    for c in changes {
+        if matches!(c.op.to_uppercase().as_str(), "A" | "M") {
+            let p = c.path.trim();
+            if let Some((_, prev)) = batch.insert(p, (c.cls.trim(), c.uid.as_str())) {
+                return Err(reject(format!(
+                    "{}：同一批次里路径 `{}` 被 {} 和 {} 重复占用",
+                    c.uid, p, prev, c.uid
+                )));
+            }
+        }
+    }
+
+    for c in changes {
+        match c.op.to_uppercase().as_str() {
+            "A" | "M" => validate_placement(state, repo_id, &batch, c).await?,
+            "D" => validate_delete(state, repo_id, c).await?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn reject(msg: String) -> AppError {
+    AppError::BadRequest(msg)
+}
+
+async fn validate_placement(
+    state: &AppState,
+    repo_id: i64,
+    batch: &HashMap<&str, (&str, &str)>,
+    c: &ChangeItem,
+) -> AppResult<()> {
+    let mm = &state.mm;
+    let path = c.path.trim();
+    let segs: Vec<&str> = path.split('/').skip(1).collect();
+    if !path.starts_with('/') || path.ends_with('/') || segs.iter().any(|s| s.is_empty()) {
+        return Err(reject(format!(
+            "{}：路径 `{}` 非法，应形如 /段/段",
+            c.uid, c.path
+        )));
+    }
+
+    let cls = mm.class_by_arxml(c.cls.trim()).ok_or_else(|| {
+        reject(format!(
+            "{}：元素类 `{}` 不是 autosar448.ecore 中任何 EClass 的 ARXML 标签",
+            c.uid, c.cls
+        ))
+    })?;
+    if cls.ab {
+        let mut subs = mm.concrete_subclasses(&cls.n);
+        let more = subs.len().saturating_sub(6);
+        subs.truncate(6);
+        return Err(reject(format!(
+            "{}：`{}` 是抽象类，不能作为元素实例；具体子类例如：{}{}",
+            c.uid,
+            cls.n,
+            subs.join(", "),
+            if more > 0 {
+                format!(" 等 {more} 个")
+            } else {
+                String::new()
+            }
+        )));
+    }
+
+    // 路径唯一：两个不同元素不能占同一个路径（表上没有 UNIQUE(repo_id,path) 约束）
+    let occupant: Option<String> =
+        sqlx::query_scalar("SELECT element_uid FROM element WHERE repo_id=? AND path=?")
+            .bind(repo_id)
+            .bind(path)
+            .fetch_optional(&state.db)
+            .await?;
+    if let Some(other) = occupant.filter(|o| o != &c.uid) {
+        return Err(reject(format!(
+            "{}：路径 `{}` 已被元素 {} 占用（同一仓库内路径必须唯一）",
+            c.uid, path, other
+        )));
+    }
+
+    // 父路径："" 表示文档根
+    let parent_path = match path.rfind('/') {
+        Some(0) | None => "",
+        Some(i) => &path[..i],
+    };
+    if parent_path.is_empty() {
+        return if cls.n == "AUTOSAR" {
+            Ok(())
+        } else {
+            Err(reject(format!(
+                "{}：`{}`（{}）不能作为文档根；ARXML 的根元素只能是 AUTOSAR（/AUTOSAR）",
+                c.uid, path, cls.n
+            )))
+        };
+    }
+
+    let parent_tag = match batch.get(parent_path) {
+        Some((t, _)) => (*t).to_string(),
+        None => sqlx::query_scalar("SELECT cls FROM element WHERE repo_id=? AND path=? LIMIT 1")
+            .bind(repo_id)
+            .bind(parent_path)
+            .fetch_optional(&state.db)
+            .await?
+            .ok_or_else(|| {
+                reject(format!(
+                    "{}：父元素缺失 —— `{}` 下没有任何元素，{} 必须挂在已存在的父元素下",
+                    c.uid, parent_path, cls.n
+                ))
+            })?,
+    };
+    let pcls = mm.class_by_arxml(&parent_tag).ok_or_else(|| {
+        reject(format!(
+            "{}：父元素 `{}` 的类 `{}` 也不是合法的 EClass",
+            c.uid, parent_path, parent_tag
+        ))
+    })?;
+
+    let tags = mm.containment_tags(&pcls.n, &cls.n);
+    if tags.is_empty() {
+        let opts = mm.containment_options(&pcls.n);
+        let hint = if opts.is_empty() {
+            "该类没有任何 containment 特征，不能包含任何子元素".to_string()
+        } else {
+            format!(
+                "{} 只能容纳：{}",
+                pcls.n,
+                opts.iter()
+                    .map(|(t, ty)| format!("{t}→{ty}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        return Err(reject(format!(
+            "{}：`{}`（{}）不能直接包含 `{}`（{}）。{}",
+            c.uid, pcls.n, parent_tag, cls.n, c.cls, hint
+        )));
+    }
+
+    // 引用特征的标签必须是 ecore 里真实存在的（历史上匿名中间层会把引用挂到最近的元素祖先，
+    // 因此这里只要求"全模型存在该特征"，不要求一定声明在本人身上）
+    for r in &c.refs_out {
+        if !mm.has_feature_named(&r.feat) {
+            return Err(reject(format!(
+                "{}：引用特征 `{}` 不在 autosar448.ecore 的任何 EClass 上",
+                c.uid, r.feat
+            )));
+        }
+    }
+    Ok(())
+}
+
+async fn validate_delete(state: &AppState, repo_id: i64, c: &ChangeItem) -> AppResult<()> {
+    let path = c.path.trim();
+    if path.is_empty() {
+        return Ok(());
+    }
+    let like = format!("{}/%", crate::editor::like_escape(path));
+    let kids: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM element \
+         WHERE repo_id=? AND element_uid<>? AND path LIKE ? ESCAPE '\\\\'",
+    )
+    .bind(repo_id)
+    .bind(&c.uid)
+    .bind(&like)
+    .fetch_one(&state.db)
+    .await?;
+    if kids > 0 {
+        return Err(reject(format!(
+            "{}：`{}` 下还有 {} 个子元素，先删子元素再删父元素，否则会留下无归属的孤儿",
+            c.uid, path, kids
+        )));
+    }
+    Ok(())
+}
+
 // ============ 提交 / 推送 ============
 
 /// push = commit + 推进分支指针。整笔在一个事务里，要么全成要么全败。
@@ -159,6 +354,9 @@ async fn push_txn(
     author_id: i64,
     req: &PushReq,
 ) -> AppResult<PushResp> {
+    // 先按 ecore 校验，非法数据一律拒之门外（整个仓库的模型不能出现非法归属）
+    validate_changes(state, repo_id, &req.changes).await?;
+
     let mut tx = state.db.begin().await?;
 
     // 行锁：已存在分支的并发推送在此串行化

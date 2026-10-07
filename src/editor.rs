@@ -9,7 +9,7 @@
 //!   - `get()`     -> OverviewPage：元素元数据 + 属性 + 出/入向引用
 //!   - `search()`  -> 属性页里的"查找元素"下拉框
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -28,7 +28,7 @@ pub struct ElementBrief {
 
 /// 转义 LIKE 通配符：ARXML 路径里 `_` 很常见（如 `ApplicationDataTypes_Blueprint`），
 /// 不转义会被当成"任意单字符"，从而匹配到错误的一批元素。
-fn like_escape(s: &str) -> String {
+pub(crate) fn like_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
 
@@ -105,75 +105,76 @@ pub async fn classes(db: &MySqlPool, repo_id: i64) -> AppResult<Vec<Value>> {
 ///   - `is_element = true`：该路径下真的存在一个元素（可点开属性页）
 ///   - `has_children = true`：还有更深层的路径，需要继续展开
 /// 两者可同时为真（包本身既是元素、又含子元素）。
+///
+/// 分组在 SQL 里完成：对"父路径之后的第一段"做 GROUP BY，只回传每段一行。
+/// 早先的"先取 limit 行后代、再在内存里分组"会被 ORDER BY path 的窗口吃满——
+/// 大仓库里所有名额都被字母序最靠前的那个分支占掉，其余分支被静默丢弃，
+/// 模型树于是看起来"没有内容"（如 8281 个元素的 EcucDefs 分支整个消失）。
 pub async fn tree(db: &MySqlPool, repo_id: i64, parent: &str, limit: i64) -> AppResult<Value> {
     let limit = limit.clamp(1, 5000);
     let parent = parent.trim_end_matches('/');
 
-    // base 为父路径（根为空串）；like 为"父路径下的所有后代"前缀
-    let (base, like) = if parent.is_empty() {
-        (String::new(), "/%".to_string())
+    // prefix 为父路径（根为空串）；like 为"父路径下的所有后代"前缀
+    let prefix = parent.to_string();
+    let like = if parent.is_empty() {
+        "/%".to_string()
     } else {
-        (parent.to_string(), format!("{}/%", like_escape(parent)))
+        format!("{}/%", like_escape(parent))
     };
 
+    // SUBSTRING(path, CHAR_LENGTH(prefix) + 2) 正好跳过 "父路径/" 落到下一段
     let rows = sqlx::query(
-        "SELECT e.element_uid, e.path, e.cls, b.sn \
-         FROM element e JOIN content_blob b \
-           ON b.repo_id = e.repo_id AND b.blob_id = e.blob_id \
-         WHERE e.repo_id = ? AND e.path LIKE ? ESCAPE '\\\\' \
-         ORDER BY e.path LIMIT ?",
+        "SELECT t.seg AS seg, t.has_children AS has_children, \
+                e.element_uid AS uid, e.cls AS cls, b.sn AS sn \
+         FROM ( \
+           SELECT SUBSTRING_INDEX(SUBSTRING(path, CHAR_LENGTH(?) + 2), '/', 1) AS seg, \
+                  CAST(MAX(CASE WHEN path <> CONCAT(?, '/', \
+                       SUBSTRING_INDEX(SUBSTRING(path, CHAR_LENGTH(?) + 2), '/', 1)) \
+                       THEN 1 ELSE 0 END) AS SIGNED) AS has_children \
+           FROM element \
+           WHERE repo_id = ? AND path LIKE ? ESCAPE '\\\\' \
+           GROUP BY seg ORDER BY seg LIMIT ? \
+         ) t \
+         LEFT JOIN element e ON e.repo_id = ? AND e.path = CONCAT(?, '/', t.seg) \
+         LEFT JOIN content_blob b ON b.repo_id = e.repo_id AND b.blob_id = e.blob_id \
+         ORDER BY t.seg",
     )
+    .bind(&prefix)
+    .bind(&prefix)
+    .bind(&prefix)
     .bind(repo_id)
     .bind(&like)
     .bind(limit)
+    .bind(repo_id)
+    .bind(&prefix)
     .fetch_all(db)
     .await?;
 
-    let prefix = if base.is_empty() {
-        String::new()
-    } else {
-        format!("{base}/")
-    };
-
-    let mut map: BTreeMap<String, Value> = BTreeMap::new();
+    let mut nodes: Vec<Value> = Vec::with_capacity(rows.len());
     for r in &rows {
-        let path: String = r.get("path");
-        // 根节点时 prefix 为空，路径形如 "/AUTOSAR"，需去掉前导 '/'
-        let rest = match path.strip_prefix(&prefix) {
-            Some(s) => s.trim_start_matches('/'),
-            None => continue,
-        };
-        let seg = match rest.split('/').next() {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        let child_path = format!("{base}/{seg}");
-
-        let e = map.entry(child_path.clone()).or_insert_with(|| {
-            json!({
-                "name": seg, "path": child_path,
-                "is_element": false, "has_children": false,
-                "uid": Value::Null, "cls": Value::Null, "sn": Value::Null,
-            })
-        });
-
-        if rest == seg {
-            // 这条路径本身就是一个元素
-            e["is_element"] = json!(true);
-            e["uid"] = json!(r.get::<String, _>("element_uid"));
-            e["cls"] = json!(r.get::<String, _>("cls"));
-            let sn: String = r.get("sn");
-            e["sn"] = json!(if sn.is_empty() { seg } else { &sn });
-        } else {
-            e["has_children"] = json!(true);
-        }
+        let seg: String = r.get("seg");
+        let has_children: i64 = r.get("has_children");
+        let uid: Option<String> = r.get("uid");
+        let cls: Option<String> = r.get("cls");
+        let sn: Option<String> = r.get("sn");
+        let child_path = format!("{prefix}/{seg}");
+        nodes.push(json!({
+            "name": seg,
+            "path": child_path,
+            // LEFT JOIN 命中说明该路径下确有元素；否则只是"路径经过的中间层"
+            "is_element": uid.is_some(),
+            "has_children": has_children != 0,
+            "uid": uid,
+            "cls": cls,
+            "sn": sn.filter(|s| !s.is_empty()).unwrap_or_else(|| seg.clone()),
+        }));
     }
 
-    let nodes: Vec<Value> = map.into_values().collect();
+    let truncated = nodes.len() as i64 >= limit;
     Ok(json!({
         "parent": parent,
         "nodes": nodes,
-        "truncated": rows.len() as i64 >= limit,
+        "truncated": truncated,
     }))
 }
 

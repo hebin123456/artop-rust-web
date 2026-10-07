@@ -100,6 +100,9 @@ pub struct Metamodel {
     by_arxml: HashMap<String, String>,
     enums: HashMap<String, EnumMeta>,
     datatypes: HashMap<String, DataTypeMeta>,
+    /// 全模型出现过的结构特征名（ecore 名 / 单数标签 / 复数标签），
+    /// 用于校验引用特征是不是 ecore 里真的存在，而不是拼错的垃圾键。
+    feature_names: HashSet<String>,
 }
 
 impl Metamodel {
@@ -111,6 +114,7 @@ impl Metamodel {
             by_arxml: HashMap::new(),
             enums: HashMap::new(),
             datatypes: HashMap::new(),
+            feature_names: HashSet::new(),
         }
     }
 
@@ -120,9 +124,19 @@ impl Metamodel {
         let raw: Raw = serde_json::from_str(&txt)?;
 
         let mut by_arxml = HashMap::new();
+        let mut feature_names = HashSet::new();
         for (n, c) in &raw.classes {
             if let Some(x) = &c.x {
                 by_arxml.entry(x.clone()).or_insert_with(|| n.clone());
+            }
+            for f in &c.feat {
+                feature_names.insert(f.f.clone());
+                if let Some(x) = &f.x {
+                    feature_names.insert(x.clone());
+                }
+                if let Some(xp) = &f.xp {
+                    feature_names.insert(xp.clone());
+                }
             }
         }
         Ok(Self {
@@ -131,7 +145,13 @@ impl Metamodel {
             by_arxml,
             enums: raw.enums,
             datatypes: raw.datatypes,
+            feature_names,
         })
+    }
+
+    /// 元模型是否真的加载了。没加载时校验要整体降级，不能把仓库锁死。
+    pub fn is_loaded(&self) -> bool {
+        !self.classes.is_empty()
     }
 
     pub fn stats(&self) -> Value {
@@ -177,6 +197,75 @@ impl Metamodel {
                 self.collect(s, seen, visited, out);
             }
         }
+    }
+
+    /// `child` 是不是 `target` 的实例（沿 eSuperTypes 上溯，含自身）。
+    pub fn is_instance_of(&self, child: &str, target: &str) -> bool {
+        if child == target {
+            return true;
+        }
+        let mut stack = vec![child.to_string()];
+        let mut seen: HashSet<String> = HashSet::new();
+        while let Some(cn) = stack.pop() {
+            if !seen.insert(cn.clone()) {
+                continue;
+            }
+            let Some(c) = self.classes.get(&cn) else {
+                continue;
+            };
+            for s in &c.sup {
+                if s == target {
+                    return true;
+                }
+                stack.push(s.clone());
+            }
+        }
+        false
+    }
+
+    /// 父类 `parent` 能否以 containment 容纳 `child`：返回可用的 ARXML 标签；空表示不允许。
+    /// 判据完全来自 ecore —— 特征的 containment=true 且目标类型是 child 的祖先。
+    pub fn containment_tags(&self, parent: &str, child: &str) -> Vec<String> {
+        self.flatten(parent)
+            .into_iter()
+            .filter(|(_, f)| f.k == "ref" && f.c)
+            .filter(|(_, f)| {
+                f.t.as_deref()
+                    .is_some_and(|t| self.is_instance_of(child, t))
+            })
+            .map(|(_, f)| f.x.clone().or(f.xp.clone()).unwrap_or(f.f))
+            .collect()
+    }
+
+    /// 父类声明的全部 containment 选项 (标签, 目标类型)，用于报错时给出可选项。
+    pub fn containment_options(&self, parent: &str) -> Vec<(String, String)> {
+        self.flatten(parent)
+            .into_iter()
+            .filter(|(_, f)| f.k == "ref" && f.c)
+            .map(|(_, f)| {
+                (
+                    f.x.clone().or(f.xp.clone()).unwrap_or_else(|| f.f.clone()),
+                    f.t.clone().unwrap_or_else(|| "EObject".into()),
+                )
+            })
+            .collect()
+    }
+
+    /// `target` 的具体（非抽象）子类，用于"抽象类不能实例化"的提示。
+    pub fn concrete_subclasses(&self, target: &str) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .classes
+            .values()
+            .filter(|c| !c.ab && self.is_instance_of(&c.n, target))
+            .map(|c| c.n.clone())
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 该名字是否是 ecore 里出现过的结构特征（ecore 名 / 单数标签 / 复数标签）。
+    pub fn has_feature_named(&self, name: &str) -> bool {
+        self.feature_names.contains(name)
     }
 
     /// 类型信息 -> (控件类别, 枚举候选值)

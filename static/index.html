@@ -59,7 +59,9 @@
   .tnode{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:6px;cursor:pointer;font-size:13px;white-space:nowrap}
   .tnode:hover{background:#1b2531}
   .tnode.sel{background:#1d3a55}
-  .tnode .tw{width:12px;flex:none;color:var(--dim);font-size:11px}
+  .tnode .tw{width:14px;flex:none;color:var(--dim);font-size:11px;text-align:center;border-radius:4px}
+  .tnode .tw.hit{cursor:pointer}
+  .tnode .tw.hit:hover{background:#2a3040;color:var(--text)}
   .tnode .tnm{overflow:hidden;text-overflow:ellipsis}
   .tnode .tcls{color:var(--dim);font-size:11px;flex:none}
   .refRow{display:grid;gap:6px;margin-bottom:6px;grid-template-columns:1fr 1.6fr 30px}
@@ -273,6 +275,18 @@
     <!-- 推送 -->
     <section data-p="push" style="display:none">
       <div class="card">
+        <h3>示例工程 <span class="dim">一键创建一个符合 autosar448.ecore 的最小 AUTOSAR 工程</span></h3>
+        <div class="row">
+          <div style="flex:1;min-width:220px"><label>工程名（会新建一个同名仓库）</label><input id="spName" value="sample-autosar-project" /></div>
+          <button class="ok" id="mkSample">创建示例工程</button>
+        </div>
+        <div class="dim" style="margin-top:8px">
+          结构：<code>AUTOSAR</code> → <code>AR-PACKAGE(DemoProject)</code> → <code>APPLICATION-SW-COMPONENT-TYPE</code> / <code>SENSOR-ACTUATOR-SW-COMPONENT-TYPE</code> / <code>REFERENCE-BASE</code>，
+          子包 <code>SwcPackage</code> 下再挂 <code>SERVICE-SW-COMPONENT-TYPE</code>。
+          每一层的归属都按 ecore 的 containment 特征校验；创建后自动切到该仓库，可在「元素编辑器」里查看与编辑。
+        </div>
+      </div>
+      <div class="card">
         <h3>推送变更（commit + push）</h3>
         <div class="grid">
           <div>
@@ -280,7 +294,8 @@
             <label>基于的分支头 base_commit（留空=新建分支）</label><input id="pBase" placeholder="留空则新建分支" />
             <label>提交信息</label><input id="pMsg" value="update model" />
             <label>变更项（一行一个 JSON）</label>
-            <textarea id="pChanges">{"uid":"Demo_SwComponent","path":"/Demo/SwComponent","cls":"SW-COMPONENT","op":"A","sn":"Demo","attrs":{"name":"Demo"},"refs_out":[]}</textarea>
+            <textarea id="pChanges" rows="4">{"uid":"Demo_Root","path":"/AUTOSAR","cls":"AUTOSAR","op":"A","sn":"AUTOSAR","attrs":{"name":"AUTOSAR"},"refs_out":[]}
+{"uid":"Demo_Pkg","path":"/AUTOSAR/DemoPkg","cls":"AR-PACKAGE","op":"A","sn":"DemoPkg","attrs":{"name":"DemoPkg"},"refs_out":[]}</textarea>
             <div class="row" style="margin-top:12px"><button id="doPush">推送</button><span class="dim" id="pTip">op: A 新增 / M 修改 / D 删除</span></div>
           </div>
           <div>
@@ -521,6 +536,42 @@ $('#doPush').onclick = async () => {
   }catch(e){ $('#pOut').innerHTML='<div style="color:#f0564b">'+e.message+'</div>'; toast(e.message,'err'); }
 };
 
+/* ---------------- 示例工程 ---------------- */
+// 一键导入的最小 AUTOSAR 模型。父子关系全部取自 autosar448.ecore 的 containment 特征：
+//   AUTOSAR.arPackages→ARPackage、ARPackage.elements→PackageableElement、
+//   ARPackage.referenceBases→ReferenceBase、ARPackage.arPackages→ARPackage
+const SAMPLE_PROJECT = [
+  {uid:'Sample_Root',   path:'/AUTOSAR',                            cls:'AUTOSAR',                           op:'A', sn:'AUTOSAR',        attrs:{name:'AUTOSAR'},        refs_out:[]},
+  {uid:'Sample_Pkg',    path:'/AUTOSAR/DemoProject',                cls:'AR-PACKAGE',                        op:'A', sn:'DemoProject',    attrs:{name:'DemoProject'},    refs_out:[{feat:'referenceBases', tgt:'Sample_Base'}]},
+  {uid:'Sample_AppSwc', path:'/AUTOSAR/DemoProject/ApplicationSwc', cls:'APPLICATION-SW-COMPONENT-TYPE',     op:'A', sn:'ApplicationSwc', attrs:{name:'ApplicationSwc'}, refs_out:[]},
+  {uid:'Sample_Sensor', path:'/AUTOSAR/DemoProject/SensorSwc',      cls:'SENSOR-ACTUATOR-SW-COMPONENT-TYPE', op:'A', sn:'SensorSwc',      attrs:{name:'SensorSwc'},      refs_out:[]},
+  {uid:'Sample_Base',   path:'/AUTOSAR/DemoProject/TraceBase',      cls:'REFERENCE-BASE',                    op:'A', sn:'TraceBase',      attrs:{'SHORT-LABEL':'ArTrace','IS-DEFAULT':'false','IS-GLOBAL':'true','BASE-IS-THIS-PACKAGE':'true'}, refs_out:[]},
+  {uid:'Sample_SubPkg', path:'/AUTOSAR/DemoProject/SwcPackage',     cls:'AR-PACKAGE',                        op:'A', sn:'SwcPackage',     attrs:{name:'SwcPackage'},     refs_out:[]},
+  {uid:'Sample_SvcSwc', path:'/AUTOSAR/DemoProject/SwcPackage/ServiceSwc', cls:'SERVICE-SW-COMPONENT-TYPE',  op:'A', sn:'ServiceSwc',     attrs:{name:'ServiceSwc'},     refs_out:[]},
+];
+$('#mkSample').onclick = async () => {
+  const name = $('#spName').value.trim() || 'sample-autosar-project';
+  try{
+    let rep = null;
+    try { rep = await api('POST','/api/repos',{name}); } catch(e){ rep = null; }
+    if(!rep){                                   // 已存在则复用
+      const list = await api('GET','/api/repos');
+      rep = (list.repos || []).find(x => x.name === name) || null;
+      if(!rep) throw new Error('仓库创建失败且找不到同名仓库：' + name);
+    }
+    try{
+      const res = await api('POST',`/api/repos/${rep.id}/push`,
+        {branch:'main', message:'导入示例工程：符合 autosar448.ecore 的最小 AUTOSAR 模型', changes:SAMPLE_PROJECT});
+      toast('示例工程已创建：' + res.commit_id.slice(0,8), 'ok');
+    }catch(e){
+      toast('该仓库已存在（' + e.message + '），直接查看', 'err');
+    }
+    await loadRepos();
+    const sel = $('#repoSel'); sel.value = String(rep.id); repoId = Number(rep.id); sel.onchange && sel.onchange();
+    document.querySelector('.tabs [data-t="editor"]').click();
+  }catch(e){ toast(e.message,'err'); }
+};
+
 /* ---------------- 评审 ---------------- */
 $('#mkRv').onclick = async () => {
   try{
@@ -679,16 +730,16 @@ async function edLoadRoot(){
     const r = await api('GET', `/api/repos/${repoId}/tree?parent=&limit=3000`);
     box.innerHTML = '';
     if(!r.nodes.length){ box.innerHTML = '<div class="empty">仓库暂无元素。先到「推送变更」导入模型，或点上方「新建元素」。</div>'; return; }
-    renderTree(r.nodes, box, 0);
+    renderTree(r.nodes, box, 0, r.truncated);
   }catch(e){ box.innerHTML=''; toast(e.message,'err'); }
 }
 
-function renderTree(nodes, container, depth){
+function renderTree(nodes, container, depth, truncated){
   for(const n of nodes){
     const row = document.createElement('div');
     row.className = 'tnode';
     row.style.paddingLeft = (6 + depth*14) + 'px';
-    const tw = document.createElement('span'); tw.className='tw';
+    const tw = document.createElement('span'); tw.className='tw' + (n.has_children?' hit':'');
     tw.textContent = n.has_children ? '▸' : (n.is_element ? '·' : ' ');
     const nm = document.createElement('span'); nm.className='tnm';
     nm.textContent = n.is_element ? (n.sn || n.name) : n.name + '/';
@@ -700,23 +751,33 @@ function renderTree(nodes, container, depth){
     if(n.is_element) row.dataset.uid = n.uid;
 
     let opened = false;
-    row.onclick = async () => {
-      if(n.is_element) await selectElement(n.uid, row);
-      if(n.has_children){
-        if(!opened){
-          opened = true; tw.textContent='▾';
-          kids.innerHTML = '<div class="dim" style="padding-left:'+(6+(depth+1)*14)+'px">加载中…</div>';
-          try{
-            const r = await api('GET', `/api/repos/${repoId}/tree?parent=${encodeURIComponent(n.path)}&limit=3000`);
-            kids.innerHTML=''; renderTree(r.nodes, kids, depth+1);
-          }catch(e){ kids.innerHTML=''; toast(e.message,'err'); }
-        }else{
-          const hide = kids.style.display !== 'none';
-          kids.style.display = hide ? 'none' : '';
-          tw.textContent = hide ? '▸' : '▾';
-        }
+    const toggle = async () => {
+      if(!n.has_children) return;
+      if(!opened){
+        opened = true; tw.textContent='▾';
+        kids.innerHTML = '<div class="dim" style="padding-left:'+(6+(depth+1)*14)+'px">加载中…</div>';
+        try{
+          const r = await api('GET', `/api/repos/${repoId}/tree?parent=${encodeURIComponent(n.path)}&limit=3000`);
+          kids.innerHTML=''; renderTree(r.nodes, kids, depth+1, r.truncated);
+        }catch(e){ opened=false; tw.textContent='▸'; kids.innerHTML=''; toast(e.message,'err'); }
+      }else{
+        const hide = kids.style.display !== 'none';
+        kids.style.display = hide ? 'none' : '';
+        tw.textContent = hide ? '▸' : '▾';
       }
     };
+    // 展开只由箭头负责；点行只负责选中，两者不再耦合
+    // （ARTOP 的行为：在 Contents Tree 里选元素，而不是"点一下顺带展开又换掉右栏"）
+    tw.onclick = ev => { ev.stopPropagation(); toggle(); };
+    row.onclick = () => { if(n.is_element) selectElement(n.uid, row); };
+    row.ondblclick = () => { if(n.has_children) toggle(); };
+  }
+  if(truncated){
+    const d = document.createElement('div');
+    d.className='dim';
+    d.style.paddingLeft=(6+depth*14)+'px';
+    d.textContent='（该层已达上限，仅显示前 '+nodes.length+' 项）';
+    container.appendChild(d);
   }
 }
 
