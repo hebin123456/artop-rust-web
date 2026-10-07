@@ -937,8 +937,9 @@ function singleCtl(it){
     return selInput(pairs, cur, v=>{ writeAttr(it, v===''?null:v); markDirty(); });
   }
   if(cat==='boolean'){
-    return selInput([['','（未设置）'],['true','true'],['false','false']],
-      val===true?'true':(val===false?'false':''),
+    // blob 里的布尔值多为字符串（ARXML 就是 "true"/"false"），需一并识别
+    const cur = (val===true||val==='true') ? 'true' : ((val===false||val==='false') ? 'false' : '');
+    return selInput([['','（未设置）'],['true','true'],['false','false']], cur,
       v=>{ writeAttr(it, v===''?null:(v==='true')); markDirty(); });
   }
   if(cat==='integer') return numInput(val,true, n=>{ writeAttr(it,n); markDirty(); });
