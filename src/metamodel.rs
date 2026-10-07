@@ -263,6 +263,34 @@ impl Metamodel {
         v
     }
 
+    /// 全部可作为元素实例化的 EClass：(ARXML 标签, Ecore 类名)，按标签排序。
+    /// 抽象类不能作为元素存在，没有 ARXML 标签的类也无从落盘，二者一并排除。
+    pub fn instance_classes(&self) -> Vec<(String, String)> {
+        let mut v: Vec<(String, String)> = self
+            .by_arxml
+            .iter()
+            .filter_map(|(tag, cn)| {
+                let c = self.classes.get(cn)?;
+                if c.ab {
+                    None
+                } else {
+                    Some((tag.clone(), cn.clone()))
+                }
+            })
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 在父类 `parent_cls` 下可合法容纳的实例类 —— 供 class 搜索框按归属过滤，
+    /// 只给出"选了就能挂上去"的类，避免选出 ecore 不允许的组合。
+    pub fn child_classes(&self, parent_cls: &str) -> Vec<(String, String)> {
+        self.instance_classes()
+            .into_iter()
+            .filter(|(_, cn)| !self.containment_tags(parent_cls, cn).is_empty())
+            .collect()
+    }
+
     /// 该名字是否是 ecore 里出现过的结构特征（ecore 名 / 单数标签 / 复数标签）。
     pub fn has_feature_named(&self, name: &str) -> bool {
         self.feature_names.contains(name)

@@ -39,6 +39,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/repos/:id/elements/:uid/schema", get(element_schema))
         .route("/api/repos/:id/schema", get(class_schema))
         .route("/api/repos/:id/classes", get(list_classes))
+        // 属性编辑器的候选项：类搜索（按 ecore 过滤）与路径选择（仓库已有路径）
+        .route("/api/repos/:id/class-catalog", get(class_catalog))
+        .route("/api/repos/:id/paths", get(list_paths))
         .route("/api/repos/:id/reviews", post(create_review).get(list_reviews))
         .route("/api/reviews/:rid", get(get_review))
         .route("/api/reviews/:rid/merge-check", get(merge_check))
@@ -477,6 +480,71 @@ async fn list_classes(
     rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
     let classes = editor::classes(&st.db, repo_id).await?;
     Ok(Json(json!({ "repo_id": repo_id, "classes": classes })))
+}
+
+#[derive(Deserialize)]
+struct CatalogQuery {
+    /// 父元素路径。给了就只回该父类能容纳的类
+    #[serde(default)]
+    parent: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PathQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// class 搜索选择的候选：可实例化的 EClass（ARXML 标签 + ecore 类名）。
+/// 带 parent 时按其父类过滤，只给出"选了就能挂上去"的类（判据来自 ecore containment）。
+async fn class_catalog(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+    Query(q): Query<CatalogQuery>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let mm = &st.mm;
+    let parent = q.parent.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let items = match parent {
+        Some(pp) => {
+            let pc: Option<String> =
+                sqlx::query_scalar("SELECT cls FROM element WHERE repo_id=? AND path=? LIMIT 1")
+                    .bind(repo_id)
+                    .bind(pp)
+                    .fetch_optional(&st.db)
+                    .await?;
+            match pc.as_deref().and_then(|t| mm.class_by_arxml(t)) {
+                Some(c) => mm.child_classes(&c.n),
+                // 父元素不存在：给全量，让推送校验去兜底报错
+                None => mm.instance_classes(),
+            }
+        }
+        None => mm.instance_classes(),
+    };
+    let out: Vec<Value> = items
+        .into_iter()
+        .map(|(tag, name)| json!({ "tag": tag, "name": name }))
+        .collect();
+    Ok(Json(json!({ "repo_id": repo_id, "parent": parent, "classes": out })))
+}
+
+/// path 选择的候选：仓库里已存在的元素路径。
+async fn list_paths(
+    State(st): State<AppState>,
+    user: AuthUser,
+    Path(repo_id): Path<i64>,
+    Query(q): Query<PathQuery>,
+) -> AppResult<Json<Value>> {
+    rbac::require(&st.db, repo_id, user.id, rbac::P_READ).await?;
+    let limit = q.limit.unwrap_or(3000).clamp(1, 5000);
+    let rows: Vec<String> =
+        sqlx::query_scalar("SELECT path FROM element WHERE repo_id=? ORDER BY path LIMIT ?")
+            .bind(repo_id)
+            .bind(limit)
+            .fetch_all(&st.db)
+            .await?;
+    Ok(Json(json!({ "repo_id": repo_id, "paths": rows })))
 }
 
 /// 属性编辑器 schema：根据 Ecore 原模型给出该元素可编辑的字段树。

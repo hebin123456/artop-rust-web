@@ -180,6 +180,8 @@
           </div>
           <div id="edSearchHit" class="dim" style="margin-bottom:6px"></div>
           <div class="edTreeBox" id="edTreeBox"></div>
+          <datalist id="pathList"></datalist>
+          <datalist id="clsList"></datalist>
         </div>
 
         <div class="card">
@@ -690,6 +692,47 @@ let edDirty = false;
 let treeRepo = null;
 let pSel = null;              // 属性树里当前选中的节点描述
 let pCollapsed = new Set();   // 折叠的节点 key
+let catRepo = null;           // 候选项缓存对应的仓库 id
+
+/* 候选项：PATH 取自仓库已有路径，CLASS 取自 ecore 可实例化类（可按父类收窄） */
+function parentOf(p){
+  p = String(p==null?'':p).trim().replace(/\/+$/,'');
+  const i = p.lastIndexOf('/');
+  return i<=0 ? '' : p.slice(0,i);
+}
+function fillDatalist(sel, items, max){
+  const dl = $(sel); if(!dl) return 0;
+  dl.innerHTML='';
+  const n = Math.min(items.length, max);
+  for(let k=0;k<n;k++){
+    const o=document.createElement('option');
+    o.value = items[k].value;
+    if(items[k].label) o.label = items[k].label;
+    dl.appendChild(o);
+  }
+  return n;
+}
+async function loadCatalog(force){
+  if(!repoId) return;
+  if(!force && catRepo===repoId) return;
+  catRepo = repoId;
+  try{
+    const [pr,cr] = await Promise.all([
+      api('GET', `/api/repos/${repoId}/paths?limit=5000`),
+      api('GET', `/api/repos/${repoId}/class-catalog`),
+    ]);
+    fillDatalist('#pathList', (pr.paths||[]).map(p=>({value:p})), 3000);
+    fillDatalist('#clsList', (cr.classes||[]).map(c=>({value:c.tag,label:c.name})), 2000);
+  }catch(e){ catRepo = null; }
+}
+// 选定父路径后，把 class 候选收敛到"该父类能容纳的类"
+async function scopeClassesTo(parentPath){
+  if(!repoId) return;
+  try{
+    const cr = await api('GET', `/api/repos/${repoId}/class-catalog?parent=${encodeURIComponent(parentPath||'')}`);
+    fillDatalist('#clsList', (cr.classes||[]).map(c=>({value:c.tag,label:c.name})), 2000);
+  }catch(e){ /* 取不到就保留全量候选 */ }
+}
 
 function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmtVal(v){ return (typeof v==='object' && v!==null) ? JSON.stringify(v) : String(v==null?'':v); }
@@ -720,6 +763,7 @@ function ensureTree(){
   treeRepo = repoId;
   edLoadRoot();
   renderPending();
+  loadCatalog(true);
 }
 
 async function edLoadRoot(){
@@ -903,6 +947,7 @@ function txtInput(v,oninput,opts){
   const i=document.createElement('input');
   i.value = fmtVal(v==null?'':v);
   if(opts&&opts.placeholder) i.placeholder=opts.placeholder;
+  if(opts&&opts.list) i.setAttribute('list', opts.list);
   i.oninput=()=>oninput(i.value);
   return i;
 }
@@ -1089,12 +1134,16 @@ function renderPropTree(){
     frag.appendChild(nrow({key:'id',depth:1,icon:'ⓘ',iconCls:'grp',name:'身份 Identity',def:'元素标识与定位'}));
     frag.appendChild(nrow({key:'f:uid',depth:2,icon:'#',iconCls:'attr',name:'UID',typeTxt:'string',
       badges:[{txt:'只读',cls:'ro'}],ctl:roInput(edit.uid)}));
+    // PATH：可直接输入，也可从仓库已有路径里搜索选取
+    const pathI=txtInput(edit.path, v=>{ edit.path=v; markDirty(); }, {placeholder:'/AUTOSAR/…（可搜索选取）', list:'pathList'});
+    pathI.onchange=()=> scopeClassesTo(parentOf(edit.path));
     frag.appendChild(nrow({key:'f:path',depth:2,icon:'P',iconCls:'attr',name:'PATH',typeTxt:'string',
-      ctl:txtInput(edit.path, v=>{ edit.path=v; markDirty(); }, {placeholder:'/AUTOSAR/...'})}));
-    const clsI=txtInput(edit.cls, v=>{ edit.cls=v; markDirty(); }, {placeholder:'AR-PACKAGE'});
+      badges:[{txt:'可选取',cls:''}],ctl:pathI}));
+    // CLASS：从 ecore 可实例化类里搜索选取（带父路径时只列该父类能容纳的类）
+    const clsI=txtInput(edit.cls, v=>{ edit.cls=v; markDirty(); }, {placeholder:'AR-PACKAGE（可搜索选取）', list:'clsList'});
     clsI.onchange=async()=>{ await refreshClassSchema(); renderPropTree(); };
     frag.appendChild(nrow({key:'f:cls',depth:2,icon:'C',iconCls:'attr',name:'CLASS',typeTxt:'string',
-      badges:[{txt:'改后自动重载字段',cls:''}],ctl:clsI}));
+      badges:[{txt:'可搜索·改后自动重载字段',cls:''}],ctl:clsI}));
 
     // 元模型分组
     const groups=(sch&&sch.groups)||[];
@@ -1218,11 +1267,13 @@ $('#edRevert').onclick = async () => {
   toast('已放弃修改','ok');
 };
 $('#edNew').onclick = async () => {
-  edit = makeEdit({ uid:'new-'+Math.random().toString(36).slice(2,10), path:'', cls:'SW-COMPONENT', sn:'', attrs:{}, refs_out:[], refs_in:[], isNew:true });
+  await loadCatalog();                 // 确保 PATH / CLASS 候选项已就绪
+  edit = makeEdit({ uid:'new-'+Math.random().toString(36).slice(2,10), path:'', cls:'AR-PACKAGE', sn:'', attrs:{}, refs_out:[], refs_in:[], isNew:true });
   document.querySelectorAll('.tnode.sel').forEach(x=>x.classList.remove('sel'));
   edDirty = true;
   pSel=null; pCollapsed.clear();
   await refreshClassSchema();          // 按类名预取元模型字段
+  await scopeClassesTo(parentOf(edit.path));
   renderEdit();
   $('#pFilter').focus();
 };
